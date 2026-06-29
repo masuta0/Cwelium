@@ -1,8 +1,8 @@
 colorama
 colorist
-datetime
 requests
-tls-client
+curl-cffi
 websocket-client
+orjson
 uuid
-typing_extensions
+datetime
