@@ -30,6 +30,23 @@ import uuid
 import websocket
 import orjson
 import concurrent.futures
+import json as json_lib
+
+# ==================== 外部ボット設定ファイル ====================
+EXTERNAL_BOT_CONFIG_FILE = "external_bot_config.json"
+
+def load_bot_config():
+    if os.path.exists(EXTERNAL_BOT_CONFIG_FILE):
+        with open(EXTERNAL_BOT_CONFIG_FILE, "r") as f:
+            return json_lib.load(f)
+    return {"api_url": "http://localhost:3001", "secret": "masumani_raid_2024"}
+
+def save_bot_config(config):
+    with open(EXTERNAL_BOT_CONFIG_FILE, "w") as f:
+        json_lib.dump(config, f, indent=2)
+
+# ==================== グローバル終了フラグ ====================
+SHOULD_STOP = False
 
 class JsonWrapper:
     @staticmethod
@@ -258,15 +275,16 @@ class Render:
 
         menu_edges = {"─", "╭", "│", "╰", "╯", "╮", "»", "«"}
         menu = [
-            "╭─────────────────────────────────────────────────────────────────────────────────────────────────╮",
-            "│ «01» Joiner            «07» Token Formatter    «13» Onliner           «19» Call Spammer         │",
-            "│ «02» Leaver            «08» Button Click       «14» Voice Raper       «20» Bio Change           │",
-            "│ «03» Spammer           «09» Accept Rules       «15» Change Nick       «21» Voice Joiner         │",
-            "│ «04» Token Checker     «10» Guild Check        «16» Thread Spammer    «22» Onboard Bypass       │",
-            "│ «05» Emoji Reaction    «11» Friend Spam        «17» Typer             «23» Dm Spammer           │",
-            "│ «06» Clear Status      «12» ???                «18» ???               «24» Exit                 │",
-            "│ «25» Poll Spammer      «26» Mass Timeout       «27» Mass Nick All     «28» ???                  │",
-            "╰─────────────────────────────────────────────────────────────────────────────────────────────────╯",
+            "╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮",
+            "│ «01» Joiner            «07» Token Formatter    «13» Onliner           «19» Call Spammer             │",
+            "│ «02» Leaver            «08» Button Click       «14» Voice Raper       «20» Bio Change               │",
+            "│ «03» Spammer           «09» Accept Rules       «15» Change Nick       «21» Voice Joiner             │",
+            "│ «04» Token Checker     «10» Guild Check        «16» Thread Spammer    «22» Onboard Bypass           │",
+            "│ «05» Emoji Reaction    «11» Friend Spam        «17» Typer             «23» Dm Spammer               │",
+            "│ «06» Clear Status      «12» ???                «18» ???               «24» Exit                     │",
+            "│ «25» Poll Spammer      «26» Mass Timeout       «27» Mass Nick All     «28» ???                      │",
+            "│ «29» Ext Bot Setup     «30» Ext Bot Spam       «31» Ext Bot Status    «32» ???                      │",
+            "╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯",
             "«h» Help   «~» Credits"
         ]
 
@@ -592,6 +610,65 @@ class DiscordSocket(websocket.WebSocketApp):
 def scrape(token, guild_id, channel_id):
     sb = DiscordSocket(token, guild_id, channel_id)
     return sb.run()
+
+# ==================== 外部ボット制御クラス ====================
+class ExternalBotController:
+    def __init__(self, api_url=None, secret=None):
+        config = load_bot_config()
+        self.api_url = api_url or config.get("api_url", "http://localhost:3001")
+        self.secret = secret or config.get("secret", "masumani_raid_2024")
+        self._session = requests.Session()
+        self._session.timeout = 120
+
+    def _request(self, endpoint, method="GET", data=None):
+        url = f"{self.api_url}{endpoint}"
+        try:
+            if method.upper() == "GET":
+                r = self._session.get(url)
+            else:
+                r = self._session.post(url, json=data)
+            if r.status_code == 401:
+                return {"error": "Unauthorized - Invalid API Secret"}
+            return r.json()
+        except requests.exceptions.ConnectionError:
+            return {"error": f"Connection refused. Is the bot running at {self.api_url}?"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def status(self):
+        return self._request("/api/status", "GET")
+
+    def set_message(self, message):
+        return self._request("/api/set_message", "POST", {"message": message, "secret": self.secret})
+
+    def set_token(self, token):
+        return self._request("/api/set_token", "POST", {"token": token, "secret": self.secret})
+
+    def set_ids(self, guild_id, ids):
+        return self._request("/api/set_ids", "POST", {
+            "guild_id": guild_id,
+            "ids": ids,
+            "secret": self.secret
+        })
+
+    def spam(self, guild_id, channel_id=None, count=5, delay=600,
+             everyone=False, vote=False, random=0, message=None, token=None):
+        payload = {
+            "guild_id": guild_id,
+            "secret": self.secret,
+            "count": count,
+            "delay": delay,
+            "everyone": everyone,
+            "vote": vote,
+            "random": random,
+        }
+        if channel_id:
+            payload["channel_id"] = channel_id
+        if message:
+            payload["message"] = message
+        if token:
+            payload["token"] = token
+        return self._request("/api/spam", "POST", payload)
 
 class Raider:
     def __init__(self):
@@ -1725,6 +1802,10 @@ class Menu:
         else:
             self.raider = global_raider
 
+        # 外部ボットコントローラーは遅延初期化
+        self.bot_controller = None
+        self.bot_config = load_bot_config()
+
         self.options = {
             "1": self.joiner, 
             "2": self.leaver,
@@ -1751,6 +1832,9 @@ class Menu:
             "25": self.poll_spammer,
             "26": self.mass_timeout,
             "27": self.mass_nick_all,
+            "29": self.external_bot_setup,
+            "30": self.external_bot_spam,
+            "31": self.external_bot_status,
             "h": self.show_help,
             "H": self.show_help,
             "~": self.credit,
@@ -2026,6 +2110,126 @@ class Menu:
         args = [(token, guild_id, new_nick) for token in valid_tokens]
         self.run(self.raider.mass_nick_all, args)
 
+    # ==================== 外部ボット制御機能 ====================
+    
+    @wrapper
+    def external_bot_setup(self):
+        """外部ボットのセットアップ（接続設定 + 各種設定）"""
+        console.title("Cwelium - External Bot Setup")
+        
+        config = load_bot_config()
+        api_url = input(console.prompt(f"API URL [{config.get('api_url', 'http://localhost:3001')}]")) or config.get("api_url", "http://localhost:3001")
+        secret = input(console.prompt(f"API Secret [{config.get('secret', 'masumani_raid_2024')}]")) or config.get("secret", "masumani_raid_2024")
+        
+        save_bot_config({"api_url": api_url, "secret": secret})
+        self.bot_controller = ExternalBotController(api_url, secret)
+        
+        # 接続テスト
+        console.log("Testing connection...", C["yellow"])
+        status = self.bot_controller.status()
+        if "error" in status:
+            console.log("Failed", C["red"], False, f"Connection error: {status['error']}")
+            input("Press Enter to continue...")
+            return
+        
+        console.log("Success", C["green"], False, f"Connected! Guilds: {status.get('guilds', 0)} | Uptime: {status.get('uptime', 0):.0f}s")
+        
+        # メッセージ設定
+        msg = input(console.prompt("Custom message (Enter to skip)"))
+        if msg:
+            res = self.bot_controller.set_message(msg)
+            console.log("Set", C["green"], False, res.get("message", "OK"))
+        
+        # トークン設定
+        tk = input(console.prompt("User token (for random mentions, Enter to skip)"))
+        if tk:
+            res = self.bot_controller.set_token(tk)
+            if res.get("success"):
+                console.log("Token", C["green"], False, "Validated and saved")
+            else:
+                console.log("Token", C["red"], False, res.get("error", "Invalid"))
+        
+        # IDs 設定（オプション）
+        gid = input(console.prompt("Guild ID to set manual mention IDs (Enter to skip)"))
+        if gid:
+            ids = input(console.prompt("User IDs (comma separated)"))
+            if ids:
+                res = self.bot_controller.set_ids(gid, ids)
+                console.log("IDs", C["green"], False, f"Set {res.get('count', 0)} users")
+        
+        console.log("Setup complete!", C["green"])
+        input("Press Enter to continue...")
+
+    @wrapper
+    def external_bot_spam(self):
+        """外部ボットにスパム実行を指示"""
+        console.title("Cwelium - External Bot Spam")
+        
+        # コントローラ初期化
+        if not self.bot_controller:
+            config = load_bot_config()
+            self.bot_controller = ExternalBotController(config.get("api_url"), config.get("secret"))
+        
+        # 接続確認
+        status = self.bot_controller.status()
+        if "error" in status:
+            console.log("Error", C["red"], False, f"Bot offline: {status['error']}")
+            console.log("Please run [29] External Bot Setup first or check if bot is running.")
+            input("Press Enter to continue...")
+            return
+        
+        guild_id = input(console.prompt("Guild ID (target)"))
+        if not guild_id:
+            return
+        
+        channel_id = input(console.prompt("Channel ID (Enter for all channels)")) or None
+        count = int(input(console.prompt("Count per channel (1-20, default 5)")) or "5")
+        delay = int(input(console.prompt("Delay ms (default 600)")) or "600")
+        everyone = input(console.prompt("Add @everyone? (y/n)")) == "y"
+        vote = input(console.prompt("Add poll? (y/n)")) == "y"
+        random_count = int(input(console.prompt("Random mentions per msg (0-3, default 0)")) or "0")
+        custom_msg = input(console.prompt("Custom message (Enter for default)")) or None
+        
+        console.log("Spamming...", C["yellow"], False, "This may take a while.")
+        
+        result = self.bot_controller.spam(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            count=count,
+            delay=delay,
+            everyone=everyone,
+            vote=vote,
+            random=random_count,
+            message=custom_msg
+        )
+        
+        if "error" in result:
+            console.log("Failed", C["red"], False, result["error"])
+        else:
+            console.log("Success", C["green"], False, f"{result.get('total_sent', 0)} messages sent to {result.get('channels', 0)} channels")
+            if result.get("errors", 0) > 0:
+                console.log("Warnings", C["yellow"], False, f"{result.get('errors')} errors occurred (check bot logs)")
+        
+        input("Press Enter to continue...")
+
+    @wrapper
+    def external_bot_status(self):
+        """外部ボットの状態を表示"""
+        console.title("Cwelium - External Bot Status")
+        
+        if not self.bot_controller:
+            config = load_bot_config()
+            self.bot_controller = ExternalBotController(config.get("api_url"), config.get("secret"))
+        
+        status = self.bot_controller.status()
+        if "error" in status:
+            console.log("Error", C["red"], False, f"Bot offline: {status['error']}")
+        else:
+            console.log("Status", C["green"], False, f"Online | Guilds: {status.get('guilds', 0)} | Uptime: {status.get('uptime', 0):.0f}s")
+            console.log("API URL:", C["cyan"], False, self.bot_controller.api_url)
+        
+        input("Press Enter to continue...")
+
     # ================== ヘルプ機能（h） ==================
     def show_help(self):
         console.clear()
@@ -2063,22 +2267,16 @@ class Menu:
   {C['light_blue']}25{C['white']} Poll Spammer    : 投票メッセージを送信（独立機能）
   {C['light_blue']}26{C['white']} Mass Timeout    : サーバー全員をタイムアウト（最大28日）
   {C['light_blue']}27{C['white']} Mass Nick All   : サーバー全員のニックネームを一括変更
+  {C['light_blue']}29{C['white']} Ext Bot Setup   : 外部Discord.jsボットに接続＆設定
+  {C['light_blue']}30{C['white']} Ext Bot Spam    : Guild ID指定で全チャンネルに一括スパム
+  {C['light_blue']}31{C['white']} Ext Bot Status  : 外部ボットの状態を確認
   {C['light_blue']}24{C['white']} Exit            : 終了
 
-{C['yellow']}スパマー(03)の詳細:{C['white']}
-  - メッセージは data/messages/ に保存でき、次回からファイル選択が可能
-  - 「Massping」を有効にすると、事前にスクレイピングしたユーザーをメンション
-  - 「Random String」を有効にすると、メッセージ末尾にランダム文字列を追加
-  - 「投票を追加」を選ぶと、デフォルトで「Raid by Masumani」の投票が付加されます
-  - Guild ID モードでは、サーバー内の全テキストチャンネルに一斉送信
-
-{C['yellow']}タイムアウト(26)の詳細:{C['white']}
-  - 指定したサーバー内の全メンバーをタイムアウト（最大28日間）
-  - 複数トークンで並列処理可能（権限のあるトークンが自動選択）
-
-{C['yellow']}全員ニックネーム変更(27)の詳細:{C['white']}
-  - 指定したサーバー内の全メンバーのニックネームを一括変更
-  - 複数トークンで並列処理可能（権限のあるトークンが自動選択）
+{C['yellow']}外部ボット制御の詳細:{C['white']}
+  - 別途起動したDiscord.jsボットにHTTP APIで指示を送信します
+  - 事前に [29] で接続設定を行ってください
+  - [30] で Guild ID を指定すると、そのサーバーの全テキストチャンネルに自動送信
+  - ランダムメンションを使うには、事前にユーザートークンまたは手動IDを設定してください
 
 {C['red']}注意:{C['white']}
   - 自己ボット（ユーザートークン）を使用しています。Discordの利用規約に違反します。
