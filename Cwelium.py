@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2026 Cwelium Inc.
+ # Copyright (c) 2024-2026 Cwelium Inc.
 # This project is licensed under the Cwelium License, which includes additional
 # terms under the GNU Affero General Public License (AGPL) v3.0.
 #
@@ -29,7 +29,7 @@ import curl_cffi
 import uuid
 import websocket
 import orjson
-import concurrent.futures  # ← 追加: マルチスレッド用
+import concurrent.futures
 
 class JsonWrapper:
     @staticmethod
@@ -221,14 +221,15 @@ class Render:
         self.clear()
         self.title(f"Cwelium | Connected as {self.username} | made by Tips-Discord")
         
+        # ★ ロゴを "Masumani" に変更 ★
         edges = {"╗", "║", "╚", "╝", "═", "╔"}
         logo = [
-            " ██████╗██╗    ██╗███████╗██╗     ██╗██╗   ██╗███╗   ███╗",
-            "██╔════╝██║    ██║██╔════╝██║     ██║██║   ██║████╗ ████║",
-            "██║     ██║ █╗ ██║█████╗  ██║     ██║██║   ██║██╔████╔██║",
-            "██║     ██║███╗██║██╔══╝  ██║     ██║██║   ██║██║╚██╔╝██║",
-            "╚██████╗╚███╔███╔╝███████╗███████╗██║╚██████╔╝██║ ╚═╝ ██║",
-            " ╚═════╝ ╚══╝╚══╝ ╚══════╝╚══════╝╚═╝ ╚═════╝ ╚═╝     ╚═╝"
+            " ███╗   ███╗ █████╗ ███████╗██╗   ██╗███╗   ███╗ █████╗ ███╗   ██╗██╗",
+            " ████╗ ████║██╔══██╗██╔════╝██║   ██║████╗ ████║██╔══██╗████╗  ██║██║",
+            " ██╔████╔██║███████║███████╗██║   ██║██╔████╔██║███████║██╔██╗ ██║██║",
+            " ██║╚██╔╝██║██╔══██║╚════██║██║   ██║██║╚██╔╝██║██╔══██║██║╚██╗██║██║",
+            " ██║ ╚═╝ ██║██║  ██║███████║╚██████╔╝██║ ╚═╝ ██║██║  ██║██║ ╚████║██║",
+            " ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝",
         ]
         
         height = len(logo)
@@ -256,7 +257,6 @@ class Render:
             tokens = f.read().splitlines()
 
         menu_edges = {"─", "╭", "│", "╰", "╯", "╮", "»", "«"}
-        # ★ メニューを修正: 「06」と「12」を新機能に変更 ★
         menu = [
             "╭─────────────────────────────────────────────────────────────────────────────────────────────╮",
             "│ «01» Joiner            «07» Token Formatter    «13» Onliner           «19» Call Spammer     │",
@@ -264,7 +264,7 @@ class Render:
             "│ «03» Spammer           «09» Accept Rules       «15» Change Nick       «21» Voice Joiner     │",
             "│ «04» Token Checker     «10» Guild Check        «16» Thread Spammer    «22» Onboard Bypass   │",
             "│ «05» Emoji Reaction    «11» Friend Spam        «17» Typer             «23» Dm Spammer       │",
-            "│ «06» Clear Status      «12» Multi-Channel Spam «18» ???               «24» Exit             │",
+            "│ «06» Clear Status      «12» ???                «18» ???               «24» Exit             │",
             "╰─────────────────────────────────────────────────────────────────────────────────────────────╯",
             "«~» Credits"
         ]
@@ -629,9 +629,9 @@ class Raider:
                 "browser_version": AutoFetchHeaders.browser_version,
                 "client_build_number": AutoFetchHeaders.client_build_number,
                 "native_build_number": AutoFetchHeaders.native_build_number,
-                "client_launch_id": str(uuid.uuid4()), # eg. e6ee9ac7-cbc9-4e22-850f-d78055e4f943
-                "client_heartbeat_session_id": str(uuid.uuid4()), # eg. 481a6710-a457-4085-8660-c769355a850b
-                "launch_signature": str(uuid.uuid4()), # eg. 860f4e4c-95a1-4355-8b5e-53bee60636b8
+                "client_launch_id": str(uuid.uuid4()),
+                "client_heartbeat_session_id": str(uuid.uuid4()),
+                "launch_signature": str(uuid.uuid4()),
                 "client_event_source": None,
             }
             properties = base64.b64encode(json.dumps(payload).encode()).decode()
@@ -823,831 +823,9 @@ class Raider:
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
-    def member_scrape(self, guild_id, channel_id):
+    # ★ 新機能：サーバー全チャンネルにスパム（3から呼び出し）
+    def guild_spammer(self, token, guild_id, message, pings, delay):
         try:
-            in_guild = []
-
-            if not os.path.exists(f"scraped/{guild_id}.json"):
-                for token in tokens:
-                    response = session.get(
-                        f"https://discord.com/api/v9/guilds/{guild_id}",
-                        headers=self.headers(token),
-                    )
-
-                    match response.status_code:
-                        case 200:
-                            in_guild.append(token)
-                            break
-
-                if not in_guild:
-                    console.log("Failed", C["red"], "Missing Access")
-                token = random.choice(in_guild)
-                members = scrape(token, guild_id, channel_id)
-
-                with open(f"scraped/{guild_id}.json", "w") as f:
-                    json.dump(list(members.keys()), f, indent=2)
-        except Exception as e:
-            console.log("Failed", C["red"], False, e)
-
-    def get_random_members(self, guild_id, count):
-        if guild_id not in self.cached_members:
-            try:
-                file_path = f"scraped/{guild_id}.json"
-                if os.path.exists(file_path):
-                    with open(file_path, "r") as f:
-                        self.cached_members[guild_id] = json.loads(f.read())
-                else:
-                    return ""
-            except Exception as e:
-                console.log("Error", C["red"], f"Cache Load Failed: {e}")
-                return ""
-
-        members = self.cached_members[guild_id]
-        if not members: 
-            return ""
-        
-        selected = random.sample(members, min(count, len(members)))
-        return " ".join(f"<@!{uid}>" for uid in selected)
-
-    def voice_spammer(self, token, ws, guild_id, channel_id, close=None):
-        try:
-            self.onliner(token, ws)
-            ws.send(
-                json.dumps(
-                    {
-                        "op": 4,
-                        "d": {
-                            "guild_id": guild_id,
-                            "channel_id": channel_id,
-                            "self_mute": False,
-                            "self_deaf": False,
-                            "self_stream": False,
-                            "self_video": True,
-                        },
-                    }
-                )
-            )
-
-            ws.send(
-                json.dumps(
-                    {
-                        "op": 18,
-                        "d": {
-                            "type": "guild",
-                            "guild_id": guild_id,
-                            "channel_id": channel_id,
-                            "preferred_region": "singapore",
-                        },
-                    }
-                )
-            )
-            
-            ws.send(json.dumps({"op": 1, "d": None}))
-            if close:
-                ws.close()
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def vc_joiner(self, token, guild, channel, ws):
-        try:
-            for _ in range(1):
-                ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
-                ws.send(json.dumps({
-                    "op": 2,
-                    "d": {
-                        "token": token,
-                        "properties": {
-                            "os": "windows",
-                            "browser": "Discord",
-                            "device": "desktop"
-                        }
-                    }
-                }))
-
-                ws.send(json.dumps({
-                    "op": 4,
-                    "d": {
-                        "guild_id": guild,
-                        "channel_id": channel,
-                        "self_mute": random.choice([True, False]),
-                        "self_deaf": False
-                    }
-                }))
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def onliner(self, token, ws):
-        try:
-            ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
-            ws.send(
-                json.dumps(
-                    {
-                        "op": 2,
-                        "d": {
-                            "token": token,
-                            "properties": {
-                                "os": "Windows",
-                            },
-                            "presence": {
-                                "game": {
-                                    "name": "Cwelium",
-                                    "type": 0,
-                                },
-                                "status": random.choice(['online', 'dnd', 'idle']),
-                                "since": 0,
-                                "afk": False
-                            }
-                        },
-                    }
-                )
-            )
-
-            console.log("Onlined", C[color], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def join_voice_channel(self, token, guild_id, channel_id):
-        ws = websocket.WebSocket()
-
-        def check_for_guild(token):
-            response = session.get(
-                f"https://discord.com/api/v9/guilds/{guild_id}", 
-                headers=self.headers(token)
-            )
-            match response.status_code:
-                case 200:
-                    return True
-                case _:
-                    return False
-
-        def check_for_channel(token):
-            if check_for_guild(token):
-                response = session.get(
-                    f"https://discord.com/api/v9/channels/{channel_id}", 
-                    headers=self.headers(token)
-                )
-
-                match response.status_code:
-                    case 200:
-                        return True
-                    case _:
-                        return False
-
-        if check_for_channel(token):
-            console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-            self.vc_joiner(token, guild_id, channel_id, ws)
-        else:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-
-    def soundbord(self, token, channel):
-        try:
-            sounds = session.get(
-                "https://discord.com/api/v9/soundboard-default-sounds",
-                headers=self.headers(token)
-            ).json()
-
-            time.sleep(1)
-
-            while True:
-                sound = random.choice(sounds)
-
-                payload = {
-                    "emoji_id": None,
-                    "emoji_name": sound["emoji_name"],
-                    "sound_id": sound["sound_id"],
-                }
-
-                response = session.post(
-                    f"https://discord.com/api/v9/channels/{channel}/send-soundboard-sound", 
-                    headers=self.headers(token), 
-                    json=payload,
-                )
-
-                match response.status_code:
-                    case 204:
-                        console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Played {sound['name']}")
-                    case 429:
-                        retry_after = response.json()["retry_after"]
-                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
-                        time.sleep(float(retry_after))
-                    case _:
-                        break
-                time.sleep(random.uniform(0.56, 0.75))
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def open_dm(self, token, user_id):
-        try:
-            payload = {
-                "recipients": [f'{user_id}'],
-            }
-
-            response = session.post(
-                "https://discord.com/api/v9/users/@me/channels",
-                headers=self.headers(token),
-                json=payload
-            )
-
-            match response.status_code:
-                case 200:
-                    return response.json()["id"]
-                case _:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                    return
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def call_spammer(self, token, user_id):
-        try:
-            while True:
-                channel_id = self.open_dm(token, user_id)
-
-                json_data = {
-                    'recipients': None,
-                }
-
-                response = session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/call",
-                    headers=self.headers(token),
-                    json=json_data,
-                )
-
-                match response.status_code:
-                    case 200:
-                        console.log("Called", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", user_id)
-                        ws = websocket.WebSocket()
-                        self.voice_spammer(token, ws, channel_id, channel_id, True)
-                    case _:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                        return
-                time.sleep(5)
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def dm_spammer(self, token, user_id, message):
-        try:
-            channel_id = self.open_dm(token, user_id)
-
-            while True:
-                payload = {
-                    "content": message,
-                    "nonce": str(self.nonce()),
-                }
-
-                response = session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                    headers=self.headers(token),
-                    json=payload
-                )
-
-                match response.status_code:
-                    case 200:
-                        console.log("Send", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", user_id)
-                    case _:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))  
-                        break
-                time.sleep(7)
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def format_tokens(self):
-        try:
-            formatted = []
-
-            for token in tokens:
-                token = token.strip()
-
-                if token:
-                    tokens_split = token.split(":")
-                    if len(tokens_split) >= 3:
-                        formatted_token = tokens_split[2]
-                        formatted.append(formatted_token)
-                    else:
-                        formatted.append(token)
-
-            console.log("Success", C["green"], f"Formatted {len(formatted)} tokens")
-
-            with open("data/tokens.txt", "w") as f:
-                for token in formatted:
-                    f.write(f"{token}\n")
-
-            Menu().main_menu()
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def bio_changer(self, token, bio):
-        try:
-            payload = {
-                "bio": bio
-            }
-
-            response = session.patch(
-                "https://discord.com/api/v9/users/@me/profile",
-                headers=self.headers(token),
-                json=payload
-            )
-
-            match response.status_code:
-                case 200:
-                    console.log("Changed", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", bio)
-                case 429:
-                    console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                case _:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def mass_nick(self, token, guild, nick):
-        try:
-            payload = {
-                "nick" : nick
-            }
-
-            response = session.patch(
-                f"https://discord.com/api/v9/guilds/{guild}/members/@me", 
-                headers=self.headers(token),
-                json=payload
-            )
-
-            match response.status_code:
-                case 200:
-                    console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                case _:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def thread_spammer(self, token, channel_id, name):
-        try:
-            payload = {
-                "name": name,
-                "type": 11,
-                "auto_archive_duration": 4320,
-                "location": "Thread Browser Toolbar",
-            }
-
-            while True:
-                response = session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/threads",
-                    headers=self.headers(token),
-                    json=payload
-                )
-
-                match response.status_code:
-                    case 201:
-                        console.log("Created", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", name)
-                    case 429:
-                        retry_after = response.json()["retry_after"]
-                        if int(retry_after) > 10:
-                            console.log("Stopped", C["magenta"], token[:25], f"Ratelimit Exceeded - {int(round(retry_after))}s",)
-                            break
-                        else:
-                            console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
-                            time.sleep(float(retry_after))
-                    case _:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                        break
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def typier(self, token, channel_id):
-        try:
-            while True:
-                response = session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/typing", 
-                    headers=self.headers(token)
-                )
-
-                match response.status_code: 
-                    case 204:
-                        console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                        time.sleep(9)
-                    case _:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                        break
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def friender(self, token, nickname):
-        try:
-            payload = {
-                "username": nickname,
-                "discriminator": None,
-            }
-
-            response = session.post(
-                f"https://discord.com/api/v9/users/@me/relationships", 
-                headers=self.headers(token), 
-                json=payload
-            )
-
-            match response.status_code:
-                case 204:
-                    console.log(f"Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                case 400:
-                    console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                case _:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json())
-        except Exception as e:
-            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-    def guild_checker(self, guild_id):
-        def main_checker(token):
-            try:
-                while True:
-                    response = session.get(
-                        f"https://discord.com/api/v9/guilds/{guild_id}",
-                        headers=self.headers(token)
-                    )
-
-                    match response.status_code:
-                        case 200:
-                            console.log("Found", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
-                            break
-                        case 429:
-                            retry_after = response.json()["retry_after"]
-                            console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
-                            time.sleep(float(retry_after))
-                        case _:
-                            console.log("Not Found", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
-                            break
-            except Exception as e:
-                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-        args = [
-            (token, ) for token in tokens
-        ]
-        Menu().run(main_checker, args)
-
-    def token_checker(self):
-        # todo: fix saving valid tokens
-        valid = []
-
-        def main(token):
-            try:
-                while True:
-                    response = session.get(
-                        "https://discordapp.com/api/v9/users/@me/library",
-                        headers=self.headers(token)
-                    )
-
-                    match response.status_code:
-                        case 200:
-                            console.log("Valid", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                            valid.append(token)
-                            break
-                        case 403:
-                            console.log("Locked", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                            break
-                        case 429:
-                            retry_after = response.json()["retry_after"]
-                            console.log("Ratelimit", C["pink"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"{retry_after}s")
-                            time.sleep(retry_after)
-                        case _:
-                            console.log("Invalid", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                            break
-            except Exception as e:
-                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-        with open("data/tokens.txt", "r") as f:
-            tokens = list({line.strip().replace('"', '') for line in f if line.strip()})
-        
-        args = [
-            (token, ) for token in tokens
-        ]
-        Menu().run(main, args)
-
-        with open("data/tokens.txt", "w") as f:
-            f.write("\n".join(valid))
-
-    def accept_rules(self, guild_id):
-        try:
-            valid = []
-                
-            for token in tokens:
-                value = session.get(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/member-verification",
-                    headers=self.headers(token)
-                )
-
-                match value.status_code:
-                    case 200:
-                        valid.append(token)
-                        payload = value.json()
-                        break
-
-            if not valid:
-                console.log("Failed", C["red"], "All tokens are Invalid")
-                input()
-                Menu().main_menu()
-
-            def run_main(token):
-                try:
-                    response = session.put(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/requests/@me",
-                        headers=self.headers(token),
-                        json=payload
-                    )
-
-                    match response.status_code:
-                        case 201:
-                            console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
-                        case _:
-                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                except Exception as e:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-            args = [
-                (token, ) for token in tokens
-            ]
-            Menu().run(run_main, args)
-        except Exception as e:
-            console.log("Failed", C["red"], "Failed to Accept Rules", e)
-
-    def onboard_bypass(self, guild_id):
-        try:
-            master_token = None
-            for token in tokens:
-                resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/onboarding", headers=self.headers(token))
-                match resp.status_code:
-                    case 200:
-                        onboarding_data = resp.json()
-                        master_token = token
-                        break
-
-            if not master_token:
-                console.log("Failed", C["red"], "No tokens have access to this guild's onboarding.")
-                return
-
-            responses = []
-            prompts_seen = {}
-            options_seen = {}
-            
-            prompts = onboarding_data.get("prompts", [])
-            if not prompts:
-                console.log("Info", C["gray"], "Guild has no onboarding prompts.")
-                return
-
-            for prompt in prompts:
-                p_id = prompt["id"]
-                available_options = prompt.get("options", [])
-                if not available_options: continue
-                
-                selected_option = random.choice(available_options)["id"]
-                responses.append(selected_option)
-                
-                fake_time = int(time.time()) - random.randint(5, 15)
-                prompts_seen[p_id] = fake_time
-                
-                for opt in available_options:
-                    options_seen[opt["id"]] = fake_time
-
-            def run_task(token):
-                token_time = int(time.time()) - random.randint(1, 10)
-                
-                t_prompts_seen = {k: token_time for k in prompts_seen}
-                t_options_seen = {k: token_time for k in options_seen}
-
-                payload = {
-                    "onboarding_responses": responses,
-                    "onboarding_prompts_seen": t_prompts_seen,
-                    "onboarding_responses_seen": t_options_seen,
-                }
-
-                resp = session.post(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/onboarding-responses",
-                    headers=self.headers(token),
-                    json=payload
-                )
-
-                match resp.status_code:
-                    case 200:
-                        console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                    case _:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
-
-            args = [
-                (token, ) for token in tokens
-            ]
-            Menu().run(run_task, args)
-        except Exception as e:
-            console.log("Failed", C["red"], "Failed to Pass Onboard", e)
-            input()
-            Menu().main_menu()
-
-    def reactor_main(self, channel_id, message_id):
-        try:
-            access_token = []
-            emojis = []
-
-            params = {
-                "around": message_id, 
-                "limit": 50
-            }
-
-            for token in tokens:
-                response = session.get(
-                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                    headers=self.headers(token),
-                    params=params
-                )
-
-                match response.status_code:
-                    case 200:
-                        access_token.append(token)
-                        break
-
-            if not access_token:
-                console.log("Failed", C["red"], "Missing Permissions")
-                input()
-                Menu().main_menu()
-            else:
-                data = response.json()
-                for __ in data:
-                    if __["id"] == message_id:
-                        reactions = __["reactions"]
-                        for emois in reactions:
-                            if emois:
-                                emoji_id = emois["emoji"]["id"]
-                                emoji_name = emois["emoji"]["name"]
-
-                                if emoji_id is None:
-                                    emojis.append(emoji_name)
-                                else:
-                                    emojis.append(f"{emoji_name}:{emoji_id}")
-                            else:
-                                console.log("Failed", C["red"], "No reactions Found in this message",)
-                                input()
-                                Menu().main_menu()
-
-                for i, emoji in enumerate(emojis, start=1):
-                    print(f"{C[color]}0{i}:{C['white']} {emoji}")
-
-                choice = input(f"\n{console.prompt('Choice')}")
-                if choice.startswith('0') and len(choice) == 2:
-                    choice = str(int(choice))
-                selected = emojis[int(choice) - 1]
-
-            def add_reaction(token):
-                try:
-                    url = f"https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}/reactions/{selected}/@me"
-
-                    if emoji_id is None:
-                        url += "?location=Message&type=0"
-                    response = session.put(url, headers=self.headers(token))
-
-                    match response.status_code:
-                        case 204:
-                            console.log("Reacted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", selected)
-                        case _:
-                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                except Exception as e:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-            args = [
-                (token,) for token in tokens
-            ]
-            Menu().run(add_reaction, args)
-        except Exception as e:
-            console.log("Failed", C["red"], "Failed to get emojis", e)
-            input()
-            Menu().main_menu()
-
-    def button_bypass(self, channel_id, message_id, guild_id):
-        try:
-            access_token = []
-            buttons = []
-
-            params = {"around": message_id, "limit": 50}
-
-            for token in tokens:
-                response = session.get(
-                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                    headers=self.headers(token),
-                    params=params
-                )
-
-                match response.status_code:
-                    case 200:
-                        access_token.append(token)
-                        break
-
-            if not access_token:
-                console.log("Failed", C["red"], "Missing Permissions")
-                input()
-                Menu().main_menu()
-            else:
-                message = next((m for m in response.json() if m["id"] == message_id), None)
-
-                if not message:
-                    console.log("Failed", C["red"], "Message not found")
-                    input()
-                    Menu().main_menu()
-                else:
-                    for row in message.get("components", []):
-                        for comp in row.get("components", []):
-                            if comp.get("type") == 2:
-                                label = comp.get("label", "No Label")
-                                custom_id = comp["custom_id"]
-                                buttons.append({
-                                    "label": label,
-                                    "custom_id": custom_id,
-                                })
-
-                    if not buttons:
-                        console.log("Failed", C["red"], "No buttons found in this message")
-                        input()
-                        Menu().main_menu()
-
-            for i, btn in enumerate(buttons, start=1):
-                print(f"{C[color]}0{i}:{C['white']} {btn['label']}")
-
-            choice = input(f"\n{console.prompt('Choice')}")
-            if choice.startswith('0') and len(choice) == 2:
-                choice = str(int(choice))
-
-            btn = buttons[int(choice) - 1]
-            custom_id = btn["custom_id"]
-
-            def click_button(token):
-                try:
-                    payload = {
-                        "application_id": message["author"]["id"],
-                        "channel_id": channel_id,
-                        "data": {
-                            "component_type": 2,
-                            "custom_id": custom_id,
-                        },
-                        "guild_id": guild_id,
-                        "message_flags": 0,
-                        "message_id": message_id,
-                        "nonce": str(self.nonce()),
-                        "session_id": uuid.uuid4().hex,
-                        "type": 3,
-                    }
-
-                    resp = session.post(
-                        "https://discord.com/api/v9/interactions",
-                        headers=self.headers(token),
-                        json=payload
-                    )
-
-                    match resp.status_code:
-                        case 204:
-                            console.log("Clicked", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", btn["label"])
-                        case _:
-                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
-                except Exception as e:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-
-            args = [
-                (token,) for token in tokens
-            ]
-            Menu().run(click_button, args)
-        except Exception as e:
-            console.log("Failed", C["red"], "Failed to get buttons", e)
-            input()
-            Menu().main_menu()
-
-    # ==================== 追加機能 ①: ステータス消去 ====================
-    def clear_activity(self):
-        """全トークンのゲームアクティビティとカスタムステータスを強制消去"""
-        for token in tokens:
-            try:
-                # 1. WebSocketで空のアクティビティを送信（ゲームを消す）
-                ws = websocket.WebSocket()
-                ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
-                ws.send(json.dumps({
-                    "op": 2,
-                    "d": {
-                        "token": token,
-                        "properties": {"os": "Windows", "browser": "Discord"},
-                        "presence": {
-                            "status": "online",
-                            "since": 0,
-                            "activities": [],  # ← 空配列でゲームを削除
-                            "afk": False
-                        }
-                    }
-                }))
-                ws.close()
-                
-                # 2. REST APIでカスタムステータス（文字列）を削除
-                session.patch(
-                    "https://discord.com/api/v9/users/@me/settings",
-                    headers=self.headers(token),
-                    json={"custom_status": None}
-                )
-                console.log("Cleared", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-            except Exception as e:
-                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-            time.sleep(0.5)
-
-    # ==================== 追加機能 ②: マルチチャンネルスパマー ====================
-    def multi_channel_spammer(self, token, guild_id, message, pings, delay):
-        """指定サーバーの全テキストチャンネルに一斉送信（1トークン分）"""
-        try:
-            # チャンネル一覧を取得
             resp = session.get(
                 f"https://discord.com/api/v9/guilds/{guild_id}/channels",
                 headers=self.headers(token)
@@ -1678,7 +856,6 @@ class Raider:
                 except Exception as e:
                     console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
-            # 並列実行（最大5スレッド）
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 executor.map(send_to_channel, text_channels)
 
@@ -1686,6 +863,689 @@ class Raider:
             time.sleep(delay)
         except Exception as e:
             console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    # ★ ステータス消去（06）
+    def clear_activity(self):
+        for token in tokens:
+            try:
+                ws = websocket.WebSocket()
+                ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
+                ws.send(json.dumps({
+                    "op": 2,
+                    "d": {
+                        "token": token,
+                        "properties": {"os": "Windows", "browser": "Discord"},
+                        "presence": {
+                            "status": "online",
+                            "since": 0,
+                            "activities": [],
+                            "afk": False
+                        }
+                    }
+                }))
+                ws.close()
+                session.patch(
+                    "https://discord.com/api/v9/users/@me/settings",
+                    headers=self.headers(token),
+                    json={"custom_status": None}
+                )
+                console.log("Cleared", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            except Exception as e:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+            time.sleep(0.5)
+
+    # ★ オンライン維持（13 の修正版）
+    def keep_online(self, token):
+        while True:
+            try:
+                session.patch(
+                    "https://discord.com/api/v9/users/@me/settings",
+                    headers=self.headers(token),
+                    json={"status": "online"}
+                )
+                console.log("Online", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            except:
+                pass
+            time.sleep(60)
+
+    # ---------- 以下、既存のメソッド（変更なし） ----------
+    def member_scrape(self, guild_id, channel_id):
+        try:
+            in_guild = []
+            if not os.path.exists(f"scraped/{guild_id}.json"):
+                for token in tokens:
+                    response = session.get(
+                        f"https://discord.com/api/v9/guilds/{guild_id}",
+                        headers=self.headers(token),
+                    )
+                    if response.status_code == 200:
+                        in_guild.append(token)
+                        break
+                if not in_guild:
+                    console.log("Failed", C["red"], "Missing Access")
+                    return
+                token = random.choice(in_guild)
+                members = scrape(token, guild_id, channel_id)
+                with open(f"scraped/{guild_id}.json", "w") as f:
+                    json.dump(list(members.keys()), f, indent=2)
+        except Exception as e:
+            console.log("Failed", C["red"], False, e)
+
+    def get_random_members(self, guild_id, count):
+        if guild_id not in self.cached_members:
+            try:
+                file_path = f"scraped/{guild_id}.json"
+                if os.path.exists(file_path):
+                    with open(file_path, "r") as f:
+                        self.cached_members[guild_id] = json.loads(f.read())
+                else:
+                    return ""
+            except Exception as e:
+                console.log("Error", C["red"], f"Cache Load Failed: {e}")
+                return ""
+        members = self.cached_members[guild_id]
+        if not members: 
+            return ""
+        selected = random.sample(members, min(count, len(members)))
+        return " ".join(f"<@!{uid}>" for uid in selected)
+
+    def voice_spammer(self, token, ws, guild_id, channel_id, close=None):
+        try:
+            self.onliner_legacy(token, ws)
+            ws.send(
+                json.dumps(
+                    {
+                        "op": 4,
+                        "d": {
+                            "guild_id": guild_id,
+                            "channel_id": channel_id,
+                            "self_mute": False,
+                            "self_deaf": False,
+                            "self_stream": False,
+                            "self_video": True,
+                        },
+                    }
+                )
+            )
+            ws.send(
+                json.dumps(
+                    {
+                        "op": 18,
+                        "d": {
+                            "type": "guild",
+                            "guild_id": guild_id,
+                            "channel_id": channel_id,
+                            "preferred_region": "singapore",
+                        },
+                    }
+                )
+            )
+            ws.send(json.dumps({"op": 1, "d": None}))
+            if close:
+                ws.close()
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def vc_joiner(self, token, guild, channel, ws):
+        try:
+            for _ in range(1):
+                ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
+                ws.send(json.dumps({
+                    "op": 2,
+                    "d": {
+                        "token": token,
+                        "properties": {
+                            "os": "windows",
+                            "browser": "Discord",
+                            "device": "desktop"
+                        }
+                    }
+                }))
+                ws.send(json.dumps({
+                    "op": 4,
+                    "d": {
+                        "guild_id": guild,
+                        "channel_id": channel,
+                        "self_mute": random.choice([True, False]),
+                        "self_deaf": False
+                    }
+                }))
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def onliner_legacy(self, token, ws):
+        try:
+            ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
+            ws.send(
+                json.dumps(
+                    {
+                        "op": 2,
+                        "d": {
+                            "token": token,
+                            "properties": {
+                                "os": "Windows",
+                            },
+                            "presence": {
+                                "game": {
+                                    "name": "Cwelium",
+                                    "type": 0,
+                                },
+                                "status": random.choice(['online', 'dnd', 'idle']),
+                                "since": 0,
+                                "afk": False
+                            }
+                        },
+                    }
+                )
+            )
+            console.log("Onlined", C[color], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def join_voice_channel(self, token, guild_id, channel_id):
+        ws = websocket.WebSocket()
+        def check_for_guild(token):
+            response = session.get(
+                f"https://discord.com/api/v9/guilds/{guild_id}", 
+                headers=self.headers(token)
+            )
+            return response.status_code == 200
+        def check_for_channel(token):
+            if check_for_guild(token):
+                response = session.get(
+                    f"https://discord.com/api/v9/channels/{channel_id}", 
+                    headers=self.headers(token)
+                )
+                return response.status_code == 200
+            return False
+        if check_for_channel(token):
+            console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            self.vc_joiner(token, guild_id, channel_id, ws)
+        else:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+
+    def soundbord(self, token, channel):
+        try:
+            sounds = session.get(
+                "https://discord.com/api/v9/soundboard-default-sounds",
+                headers=self.headers(token)
+            ).json()
+            time.sleep(1)
+            while True:
+                sound = random.choice(sounds)
+                payload = {
+                    "emoji_id": None,
+                    "emoji_name": sound["emoji_name"],
+                    "sound_id": sound["sound_id"],
+                }
+                response = session.post(
+                    f"https://discord.com/api/v9/channels/{channel}/send-soundboard-sound", 
+                    headers=self.headers(token), 
+                    json=payload,
+                )
+                if response.status_code == 204:
+                    console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Played {sound['name']}")
+                elif response.status_code == 429:
+                    retry_after = response.json()["retry_after"]
+                    console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
+                    time.sleep(float(retry_after))
+                else:
+                    break
+                time.sleep(random.uniform(0.56, 0.75))
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def open_dm(self, token, user_id):
+        try:
+            payload = {"recipients": [f'{user_id}']}
+            response = session.post(
+                "https://discord.com/api/v9/users/@me/channels",
+                headers=self.headers(token),
+                json=payload
+            )
+            if response.status_code == 200:
+                return response.json()["id"]
+            else:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+                return
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def call_spammer(self, token, user_id):
+        try:
+            while True:
+                channel_id = self.open_dm(token, user_id)
+                json_data = {'recipients': None}
+                response = session.post(
+                    f"https://discord.com/api/v9/channels/{channel_id}/call",
+                    headers=self.headers(token),
+                    json=json_data,
+                )
+                if response.status_code == 200:
+                    console.log("Called", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", user_id)
+                    ws = websocket.WebSocket()
+                    self.voice_spammer(token, ws, channel_id, channel_id, True)
+                else:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+                    return
+                time.sleep(5)
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def dm_spammer(self, token, user_id, message):
+        try:
+            channel_id = self.open_dm(token, user_id)
+            while True:
+                payload = {"content": message, "nonce": str(self.nonce())}
+                response = session.post(
+                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                    headers=self.headers(token),
+                    json=payload
+                )
+                if response.status_code == 200:
+                    console.log("Send", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", user_id)
+                else:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))  
+                    break
+                time.sleep(7)
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def format_tokens(self):
+        try:
+            formatted = []
+            for token in tokens:
+                token = token.strip()
+                if token:
+                    tokens_split = token.split(":")
+                    if len(tokens_split) >= 3:
+                        formatted_token = tokens_split[2]
+                        formatted.append(formatted_token)
+                    else:
+                        formatted.append(token)
+            console.log("Success", C["green"], f"Formatted {len(formatted)} tokens")
+            with open("data/tokens.txt", "w") as f:
+                for token in formatted:
+                    f.write(f"{token}\n")
+            Menu().main_menu()
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def bio_changer(self, token, bio):
+        try:
+            payload = {"bio": bio}
+            response = session.patch(
+                "https://discord.com/api/v9/users/@me/profile",
+                headers=self.headers(token),
+                json=payload
+            )
+            if response.status_code == 200:
+                console.log("Changed", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", bio)
+            elif response.status_code == 429:
+                console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            else:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def mass_nick(self, token, guild, nick):
+        try:
+            payload = {"nick" : nick}
+            response = session.patch(
+                f"https://discord.com/api/v9/guilds/{guild}/members/@me", 
+                headers=self.headers(token),
+                json=payload
+            )
+            if response.status_code == 200:
+                console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            else:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def thread_spammer(self, token, channel_id, name):
+        try:
+            payload = {
+                "name": name,
+                "type": 11,
+                "auto_archive_duration": 4320,
+                "location": "Thread Browser Toolbar",
+            }
+            while True:
+                response = session.post(
+                    f"https://discord.com/api/v9/channels/{channel_id}/threads",
+                    headers=self.headers(token),
+                    json=payload
+                )
+                if response.status_code == 201:
+                    console.log("Created", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", name)
+                elif response.status_code == 429:
+                    retry_after = response.json()["retry_after"]
+                    if int(retry_after) > 10:
+                        console.log("Stopped", C["magenta"], token[:25], f"Ratelimit Exceeded - {int(round(retry_after))}s",)
+                        break
+                    else:
+                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
+                        time.sleep(float(retry_after))
+                else:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+                    break
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def typier(self, token, channel_id):
+        try:
+            while True:
+                response = session.post(
+                    f"https://discord.com/api/v9/channels/{channel_id}/typing", 
+                    headers=self.headers(token)
+                )
+                if response.status_code == 204:
+                    console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                    time.sleep(9)
+                else:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                    break
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def friender(self, token, nickname):
+        try:
+            payload = {"username": nickname, "discriminator": None}
+            response = session.post(
+                f"https://discord.com/api/v9/users/@me/relationships", 
+                headers=self.headers(token), 
+                json=payload
+            )
+            if response.status_code == 204:
+                console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            elif response.status_code == 400:
+                console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            else:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json())
+        except Exception as e:
+            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+    def guild_checker(self, guild_id):
+        def main_checker(token):
+            try:
+                while True:
+                    response = session.get(
+                        f"https://discord.com/api/v9/guilds/{guild_id}",
+                        headers=self.headers(token)
+                    )
+                    if response.status_code == 200:
+                        console.log("Found", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
+                        break
+                    elif response.status_code == 429:
+                        retry_after = response.json()["retry_after"]
+                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
+                        time.sleep(float(retry_after))
+                    else:
+                        console.log("Not Found", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
+                        break
+            except Exception as e:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+        args = [(token,) for token in tokens]
+        Menu().run(main_checker, args)
+
+    def token_checker(self):
+        valid = []
+        def main(token):
+            try:
+                while True:
+                    response = session.get(
+                        "https://discordapp.com/api/v9/users/@me/library",
+                        headers=self.headers(token)
+                    )
+                    if response.status_code == 200:
+                        console.log("Valid", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                        valid.append(token)
+                        break
+                    elif response.status_code == 403:
+                        console.log("Locked", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                        break
+                    elif response.status_code == 429:
+                        retry_after = response.json()["retry_after"]
+                        console.log("Ratelimit", C["pink"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"{retry_after}s")
+                        time.sleep(retry_after)
+                    else:
+                        console.log("Invalid", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+                        break
+            except Exception as e:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+        with open("data/tokens.txt", "r") as f:
+            tokens = list({line.strip().replace('"', '') for line in f if line.strip()})
+        args = [(token,) for token in tokens]
+        Menu().run(main, args)
+        with open("data/tokens.txt", "w") as f:
+            f.write("\n".join(valid))
+
+    def accept_rules(self, guild_id):
+        try:
+            valid = []
+            for token in tokens:
+                value = session.get(
+                    f"https://discord.com/api/v9/guilds/{guild_id}/member-verification",
+                    headers=self.headers(token)
+                )
+                if value.status_code == 200:
+                    valid.append(token)
+                    payload = value.json()
+                    break
+            if not valid:
+                console.log("Failed", C["red"], "All tokens are Invalid")
+                input()
+                Menu().main_menu()
+                return
+            def run_main(token):
+                try:
+                    response = session.put(
+                        f"https://discord.com/api/v9/guilds/{guild_id}/requests/@me",
+                        headers=self.headers(token),
+                        json=payload
+                    )
+                    if response.status_code == 201:
+                        console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
+                    else:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+                except Exception as e:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+            args = [(token,) for token in tokens]
+            Menu().run(run_main, args)
+        except Exception as e:
+            console.log("Failed", C["red"], "Failed to Accept Rules", e)
+
+    def onboard_bypass(self, guild_id):
+        try:
+            master_token = None
+            for token in tokens:
+                resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/onboarding", headers=self.headers(token))
+                if resp.status_code == 200:
+                    onboarding_data = resp.json()
+                    master_token = token
+                    break
+            if not master_token:
+                console.log("Failed", C["red"], "No tokens have access to this guild's onboarding.")
+                return
+            responses = []
+            prompts_seen = {}
+            options_seen = {}
+            prompts = onboarding_data.get("prompts", [])
+            if not prompts:
+                console.log("Info", C["gray"], "Guild has no onboarding prompts.")
+                return
+            for prompt in prompts:
+                p_id = prompt["id"]
+                available_options = prompt.get("options", [])
+                if not available_options: continue
+                selected_option = random.choice(available_options)["id"]
+                responses.append(selected_option)
+                fake_time = int(time.time()) - random.randint(5, 15)
+                prompts_seen[p_id] = fake_time
+                for opt in available_options:
+                    options_seen[opt["id"]] = fake_time
+            def run_task(token):
+                token_time = int(time.time()) - random.randint(1, 10)
+                t_prompts_seen = {k: token_time for k in prompts_seen}
+                t_options_seen = {k: token_time for k in options_seen}
+                payload = {
+                    "onboarding_responses": responses,
+                    "onboarding_prompts_seen": t_prompts_seen,
+                    "onboarding_responses_seen": t_options_seen,
+                }
+                resp = session.post(
+                    f"https://discord.com/api/v9/guilds/{guild_id}/onboarding-responses",
+                    headers=self.headers(token),
+                    json=payload
+                )
+                if resp.status_code == 200:
+                    console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                else:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
+            args = [(token,) for token in tokens]
+            Menu().run(run_task, args)
+        except Exception as e:
+            console.log("Failed", C["red"], "Failed to Pass Onboard", e)
+            input()
+            Menu().main_menu()
+
+    def reactor_main(self, channel_id, message_id):
+        try:
+            access_token = []
+            emojis = []
+            params = {"around": message_id, "limit": 50}
+            for token in tokens:
+                response = session.get(
+                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                    headers=self.headers(token),
+                    params=params
+                )
+                if response.status_code == 200:
+                    access_token.append(token)
+                    break
+            if not access_token:
+                console.log("Failed", C["red"], "Missing Permissions")
+                input()
+                Menu().main_menu()
+                return
+            data = response.json()
+            for msg in data:
+                if msg["id"] == message_id:
+                    reactions = msg.get("reactions", [])
+                    for emois in reactions:
+                        if emois:
+                            emoji_id = emois["emoji"]["id"]
+                            emoji_name = emois["emoji"]["name"]
+                            if emoji_id is None:
+                                emojis.append(emoji_name)
+                            else:
+                                emojis.append(f"{emoji_name}:{emoji_id}")
+                    break
+            if not emojis:
+                console.log("Failed", C["red"], "No reactions Found in this message")
+                input()
+                Menu().main_menu()
+                return
+            for i, emoji in enumerate(emojis, start=1):
+                print(f"{C[color]}0{i}:{C['white']} {emoji}")
+            choice = input(f"\n{console.prompt('Choice')}")
+            if choice.startswith('0') and len(choice) == 2:
+                choice = str(int(choice))
+            selected = emojis[int(choice) - 1]
+            def add_reaction(token):
+                try:
+                    url = f"https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}/reactions/{selected}/@me"
+                    response = session.put(url, headers=self.headers(token))
+                    if response.status_code == 204:
+                        console.log("Reacted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", selected)
+                    else:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+                except Exception as e:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+            args = [(token,) for token in tokens]
+            Menu().run(add_reaction, args)
+        except Exception as e:
+            console.log("Failed", C["red"], "Failed to get emojis", e)
+            input()
+            Menu().main_menu()
+
+    def button_bypass(self, channel_id, message_id, guild_id):
+        try:
+            access_token = []
+            buttons = []
+            params = {"around": message_id, "limit": 50}
+            for token in tokens:
+                response = session.get(
+                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                    headers=self.headers(token),
+                    params=params
+                )
+                if response.status_code == 200:
+                    access_token.append(token)
+                    break
+            if not access_token:
+                console.log("Failed", C["red"], "Missing Permissions")
+                input()
+                Menu().main_menu()
+                return
+            message = next((m for m in response.json() if m["id"] == message_id), None)
+            if not message:
+                console.log("Failed", C["red"], "Message not found")
+                input()
+                Menu().main_menu()
+                return
+            for row in message.get("components", []):
+                for comp in row.get("components", []):
+                    if comp.get("type") == 2:
+                        label = comp.get("label", "No Label")
+                        custom_id = comp["custom_id"]
+                        buttons.append({"label": label, "custom_id": custom_id})
+            if not buttons:
+                console.log("Failed", C["red"], "No buttons found in this message")
+                input()
+                Menu().main_menu()
+                return
+            for i, btn in enumerate(buttons, start=1):
+                print(f"{C[color]}0{i}:{C['white']} {btn['label']}")
+            choice = input(f"\n{console.prompt('Choice')}")
+            if choice.startswith('0') and len(choice) == 2:
+                choice = str(int(choice))
+            btn = buttons[int(choice) - 1]
+            custom_id = btn["custom_id"]
+            def click_button(token):
+                try:
+                    payload = {
+                        "application_id": message["author"]["id"],
+                        "channel_id": channel_id,
+                        "data": {
+                            "component_type": 2,
+                            "custom_id": custom_id,
+                        },
+                        "guild_id": guild_id,
+                        "message_flags": 0,
+                        "message_id": message_id,
+                        "nonce": str(self.nonce()),
+                        "session_id": uuid.uuid4().hex,
+                        "type": 3,
+                    }
+                    resp = session.post(
+                        "https://discord.com/api/v9/interactions",
+                        headers=self.headers(token),
+                        json=payload
+                    )
+                    if resp.status_code == 204:
+                        console.log("Clicked", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", btn["label"])
+                    else:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
+                except Exception as e:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+            args = [(token,) for token in tokens]
+            Menu().run(click_button, args)
+        except Exception as e:
+            console.log("Failed", C["red"], "Failed to get buttons", e)
+            input()
+            Menu().main_menu()
 
 class Menu:
     def __init__(self):
@@ -1701,20 +1561,18 @@ class Menu:
         else:
             self.raider = global_raider
 
-        # ★ self.options に 「6」と「12」を追加 ★
         self.options = {
             "1": self.joiner, 
             "2": self.leaver,
             "3": self.spammer, 
             "4": self.checker,
             "5": self.reactor, 
-            "6": self.clear_status,          # ← 追加
+            "6": self.clear_status,
             "7": self.formatter,
             "8": self.button,
             "9": self.accept,
             "10": self.guild,
             "11": self.friender,
-            "12": self.multi_channel_spam,   # ← 追加
             "13": self.onliner,
             "14": self.soundbord,
             "15": self.nick_changer,
@@ -1731,12 +1589,9 @@ class Menu:
 
     def main_menu(self):
         console.run()
-
         choice = input(f"{' '*6}{self.background}-> {Fore.RESET}")
-
         if choice.startswith('0') and len(choice) == 2:
             choice = str(int(choice))
-
         if choice.lower() in self.options:
             console.render_ascii()
             self.options[choice.lower()]()
@@ -1747,7 +1602,6 @@ class Menu:
         threads = []
         console.clear()
         console.render_ascii()
-
         for idx, arg in enumerate(args):
             if proxy and proxies:
                 selected_proxy = proxies[idx % len(proxies)]
@@ -1757,70 +1611,122 @@ class Menu:
                 }
             else:
                 session.proxies = {} 
-                
             thread = threading.Thread(target=func, args=arg, daemon=True)
             threads.append(thread)
             thread.start()
-
         for thread in threads:
             thread.join()
-
         input(f"\n   {self.background}~/> press enter to continue ")
         self.main_menu()
 
-    # ==================== 追加機能 ① ラッパー ====================
+    # ========== 03 Spammer（拡張版 + 即時チャンネル表示） ==========
+    @wrapper
+    def spammer(self):
+        console.title("Cwelium - Spammer")
+        use_guild = input(console.prompt("Use Guild ID for all channels? (y/n)"))
+        if use_guild.lower().startswith('y'):
+            guild_id = input(console.prompt("Guild ID"))
+            if not guild_id:
+                self.main_menu()
+            
+            # ★ サーバーID入力後、即座にチャンネル一覧を取得して表示 ★
+            console.log("Fetching channel list...", C["yellow"])
+            try:
+                temp_token = tokens[0]
+                headers = self.raider.headers(temp_token)
+                resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/channels", headers=headers)
+                if resp.status_code == 200:
+                    channels = resp.json()
+                    text_channels = [c for c in channels if c.get('type') == 0]
+                    console.log("Found", C["green"], False, f"{len(text_channels)} text channels")
+                    for ch in text_channels[:15]:
+                        console.log("Channel", C["cyan"], False, f"{ch['id']} - #{ch.get('name', 'No name')}")
+                    if len(text_channels) > 15:
+                        console.log("Info", C["gray"], False, f"... and {len(text_channels)-15} more")
+                    if not text_channels:
+                        console.log("Warning", C["yellow"], False, "No text channels found in this guild.")
+                else:
+                    console.log("Failed", C["red"], False, f"Could not fetch channels (HTTP {resp.status_code})")
+                    input("Press Enter to continue...")
+                    self.main_menu()
+            except Exception as e:
+                console.log("Error", C["red"], False, f"Failed to fetch: {e}")
+                input("Press Enter to continue...")
+                self.main_menu()
+
+            message = input(console.prompt("Message"))
+            if not message:
+                self.main_menu()
+            pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
+            delay = float(input(console.prompt("Delay between cycles (秒, 3〜5推奨)")) or "3")
+            console.clear()
+            console.render_ascii()
+            args = [(token, guild_id, message, pings, delay) for token in tokens]
+            self.run(self.raider.guild_spammer, args)
+        else:
+            link = input(console.prompt("Channel LINK"))
+            if link == "" or not link.startswith("https://"):
+                self.main_menu()
+            guild_id = link.split("/")[4]
+            channel_id = link.split("/")[5]
+            massping = input(console.prompt("Massping", True))
+            random_str = input(console.prompt("Random String", True))
+            message = input(console.prompt("Message"))
+            if message == "":
+                self.main_menu()
+            delay_input = input(console.prompt("Delay (seconds)"))
+            delay = None
+            if delay_input != "":
+                delay = float(delay_input)
+            ping_count = None
+            if "y" in massping:
+                console.log("Scraping users", self.background, False, "this may take a while...")
+                self.raider.member_scrape(guild_id, channel_id)
+                count_str = input(console.prompt("Pings Amount"))
+                if count_str == "":
+                    self.main_menu()
+                ping_count = int(count_str)
+            args = [
+                (token, channel_id, message, guild_id, "y" in massping, ping_count, "y" in random_str, delay)
+                for token in tokens
+            ]
+            self.run(self.raider.spammer, args)
+
+    # ========== 06 Clear Status ==========
     @wrapper
     def clear_status(self):
         console.title("Cwelium - Clear Status")
         self.run(self.raider.clear_activity, [()])
 
-    # ==================== 追加機能 ② ラッパー ====================
-    @wrapper
-    def multi_channel_spam(self):
-        console.title("Cwelium - Multi-Channel Spammer")
-        guild_id = input(console.prompt("Guild ID"))
-        if not guild_id:
-            self.main_menu()
-        message = input(console.prompt("Message"))
-        if not message:
-            self.main_menu()
-        pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
-        delay = float(input(console.prompt("Delay between cycles (秒, 3〜5推奨)")) or "3")
+    # ========== 13 Onliner（修正版） ==========
+    def onliner(self):
+        console.title("Cwelium - Onliner")
+        args = [(token,) for token in tokens]
+        self.run(self.raider.keep_online, args)
 
-        console.clear()
-        console.render_ascii()
-        args = [(token, guild_id, message, pings, delay) for token in tokens]
-        self.run(self.raider.multi_channel_spammer, args)
-
-    # ==================== 既存ラッパー（そのまま） ====================
+    # ---------- 以下、既存のラッパー（変更なし） ----------
     @wrapper
     def dm_spam(self):
-        console.title(f"Cwelium - Dm Spammer")
+        console.title("Cwelium - Dm Spammer")
         user_id = input(console.prompt("User ID"))
         if user_id == "":
             self.main_menu()
-
         message = input(console.prompt("Message"))
         if message == "":
             self.main_menu()
-
         console.clear()
         console.render_ascii()
-        args = [
-            (token, user_id, message) for token in tokens
-        ]
+        args = [(token, user_id, message) for token in tokens]
         self.run(self.raider.dm_spammer, args)
 
     @wrapper
     def soundbord(self):
-        console.title(f"Cwelium - Soundboard Spam")
+        console.title("Cwelium - Soundboard Spam")
         Link = input(console.prompt("Channel LINK"))
         if Link == "" or not Link.startswith("https://"):
             self.main_menu()
-            
         channel = Link.split("/")[5]
         guild = Link.split("/")[4]
-
         console.clear()
         console.render_ascii()
         for token in tokens:
@@ -1829,170 +1735,98 @@ class Menu:
 
     @wrapper
     def friender(self):
-        console.title(f"Cwelium - Friender")
+        console.title("Cwelium - Friender")
         nickname = input(console.prompt("Nick"))
         if nickname == "":
             self.main_menu()
-
-        args = [
-            (token, nickname) for token in tokens
-        ]
+        args = [(token, nickname) for token in tokens]
         self.run(self.raider.friender, args)
 
     @wrapper
     def caller(self):
-        console.title(f"Cwelium - Call Spammer")
+        console.title("Cwelium - Call Spammer")
         user_id = input(console.prompt("User ID"))
         if user_id == "":
             self.main_menu()
-
         console.clear()
         console.render_ascii()
-        args = [
-            (token, user_id) for token in tokens
-        ]
+        args = [(token, user_id) for token in tokens]
         self.run(self.raider.call_spammer, args)
-
-    def onliner(self):
-        console.title(f"Cwelium - Onliner")
-        args = [
-            (token, websocket.WebSocket()) for token in tokens
-        ]
-        self.run(self.raider.onliner, args)
 
     @wrapper
     def typier(self):
-        console.title(f"Cwelium - Typer")
-        Link = input(console.prompt(f"Channel LINK"))
+        console.title("Cwelium - Typer")
+        Link = input(console.prompt("Channel LINK"))
         if Link == "" or not Link.startswith("https://"):
             self.main_menu()
-
         channelid = Link.split("/")[5]
-        args = [
-            (token, channelid) for token in tokens
-        ]
+        args = [(token, channelid) for token in tokens]
         self.run(self.raider.typier, args)
 
     @wrapper
     def nick_changer(self):
-        console.title(f"Cwelium - Nickname Changer")
+        console.title("Cwelium - Nickname Changer")
         nick = input(console.prompt("Nick"))
         if nick == "" or len(nick) > 32:
             self.main_menu()
-
         guild = input(console.prompt("Guild ID"))
         if guild == "":
             self.main_menu()
-
-        args = [
-            (token, guild, nick) for token in tokens
-        ]
+        args = [(token, guild, nick) for token in tokens]
         self.run(self.raider.mass_nick, args)
 
     @wrapper
     def voice_joiner(self):
-        console.title(f"Cwelium - Voice Joiner")
+        console.title("Cwelium - Voice Joiner")
         Link = input(console.prompt("Channel LINK"))
         if Link == "" or not Link.startswith("https://"):
             self.main_menu()
-
         guild = Link.split("/")[4]
         channel = Link.split("/")[5]
-        args = [
-            (token, guild, channel) for token in tokens
-        ]
+        args = [(token, guild, channel) for token in tokens]
         self.run(self.raider.join_voice_channel, args)
 
     @wrapper
     def Thread_Spammer(self):
-        console.title(f"Cwelium - Thread Spammer")
+        console.title("Cwelium - Thread Spammer")
         Link = input(console.prompt("Channel LINK"))
         if Link == "" or not Link.startswith("https://"):
             self.main_menu()
-
         name = input(console.prompt("Name"))
         if name == "":
             self.main_menu()
-
         channel_id = Link.split("/")[5]
-        args = [
-            (token, channel_id, name) for token in tokens
-        ]
+        args = [(token, channel_id, name) for token in tokens]
         self.run(self.raider.thread_spammer, args)
 
     @wrapper
     def joiner(self):
-        console.title(f"Cwelium - Joiner")
-        invite = input(console.prompt(f"Invite"))
+        console.title("Cwelium - Joiner")
+        invite = input(console.prompt("Invite"))
         if invite == "":
             self.main_menu()
-
         invite = re.sub(r"(https?://)?(www\.)?(discord\.(gg|com)/(invite/)?|\.gg/)", "", invite)
-
         self.raider.joiner(invite)
 
     @wrapper 
     def leaver(self):
-        console.title(f"Cwelium - Leaver")
+        console.title("Cwelium - Leaver")
         guild = input(console.prompt("Guild ID"))
         if guild == "":
             self.main_menu()
-
-        args = [
-            (token, guild) for token in tokens
-        ]
+        args = [(token, guild) for token in tokens]
         self.run(self.raider.leaver, args)
 
-    @wrapper
-    def spammer(self):
-        console.title(f"Cwelium - Spammer")
-        link = input(console.prompt(f"Channel LINK"))
-        if link == "" or not link.startswith("https://"):
-            self.main_menu()
-
-        guild_id = link.split("/")[4]
-        channel_id = link.split("/")[5]
-
-        massping = input(console.prompt("Massping", True))
-        random_str = input(console.prompt("Random String", True))
-        message = input(console.prompt("Message"))
-
-        if message == "":
-            self.main_menu()
-
-        delay_input = input(console.prompt("Delay (seconds)"))
-        delay = None
-        if delay_input != "":
-            delay = float(delay_input)
-
-        ping_count = None
-        if "y" in massping:
-            console.log(f"Scraping users", self.background, False, "this may take a while...")
-            self.raider.member_scrape(guild_id, channel_id)
-            count_str = input(console.prompt("Pings Amount"))
-            if count_str == "":
-                self.main_menu()
-
-            ping_count = int(count_str)
-
-        args = [
-            (token, channel_id, message, guild_id, "y" in massping, ping_count, "y" in random_str, delay)
-            for token in tokens
-        ]
-
-        self.run(self.raider.spammer, args)
-
     def checker(self):
-        console.title(f"Cwelium - Checker")
+        console.title("Cwelium - Checker")
         self.raider.token_checker()
 
     @wrapper
     def reactor(self):
-        console.title(f"Cwelium - Reactor")
+        console.title("Cwelium - Reactor")
         Link = input(console.prompt("Message Link"))
         if Link == "" or not Link.startswith("https://"):
             self.main_menu()
-
         channel_id = Link.split("/")[5]
         message_id = Link.split("/")[6]
         console.clear()
@@ -2000,65 +1834,57 @@ class Menu:
         self.raider.reactor_main(channel_id, message_id)
 
     def button(self):
-        console.title(f"Cwelium - Button Click")
+        console.title("Cwelium - Button Click")
         Link = input(console.prompt("Message Link"))
         if Link == "" or not Link.startswith("https://"):
             self.main_menu()
             return
-
         guild_id = Link.split("/")[4]
         channel_id = Link.split("/")[5]
         message_id = Link.split("/")[6]
-
         console.clear()
         console.render_ascii()
         self.raider.button_bypass(channel_id, message_id, guild_id)
 
     def formatter(self):
-        console.title(f"Cwelium - Formatter")
+        console.title("Cwelium - Formatter")
         self.run(self.raider.format_tokens, [()])
 
     @wrapper
     def accept(self):
-        console.title(f"Cwelium - Accept Rules")
+        console.title("Cwelium - Accept Rules")
         guild_id = input(console.prompt("Guild ID"))
         if guild_id == "":
             self.main_menu()
-
         console.clear()
         console.render_ascii()
         self.raider.accept_rules(guild_id)
 
     @wrapper
     def guild(self):
-        console.title(f"Cwelium - Guild Checker")
+        console.title("Cwelium - Guild Checker")
         guild_id = input(console.prompt("Guild ID"))
         if guild_id == "":
             self.main_menu()
-
         console.clear()
         console.render_ascii()
         self.raider.guild_checker(guild_id)
 
     @wrapper
     def bio_changer(self):
-        console.title(f"Cwelium - Bio Changer")
+        console.title("Cwelium - Bio Changer")
         bio = input(console.prompt("Bio"))
         if bio == "":
             self.main_menu()
-
-        args = [
-            (token, bio) for token in tokens
-        ]
+        args = [(token, bio) for token in tokens]
         self.run(self.raider.bio_changer, args)
 
     @wrapper
     def onboard(self):
-        console.title(f"Cwelium - Onboarding Bypass")
+        console.title("Cwelium - Onboarding Bypass")
         guild_id = input(console.prompt("Guild ID"))
         if guild_id == "":
             self.main_menu()
-
         console.clear()
         console.render_ascii()
         self.raider.onboard_bypass(guild_id)
@@ -2072,11 +1898,9 @@ class Menu:
             "Original Owner of Helium/Cwelium: Ekkore",
             "And last but not least, you! Without you, this project wouldn't be possible.",
         ]
-
         for line in credits_lines:
             centered_line = line.center(os.get_terminal_size().columns)
             print(f"{Fore.RESET}{self.background}{centered_line}{Fore.RESET}")
-
         input("\n ~/> press enter to continue ")
         self.main_menu()
 
