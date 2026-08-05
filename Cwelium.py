@@ -29,6 +29,7 @@ import curl_cffi
 import uuid
 import websocket
 import orjson
+import concurrent.futures  # ← 追加: マルチスレッド用
 
 class JsonWrapper:
     @staticmethod
@@ -255,6 +256,7 @@ class Render:
             tokens = f.read().splitlines()
 
         menu_edges = {"─", "╭", "│", "╰", "╯", "╮", "»", "«"}
+        # ★ メニューを修正: 「06」と「12」を新機能に変更 ★
         menu = [
             "╭─────────────────────────────────────────────────────────────────────────────────────────────╮",
             "│ «01» Joiner            «07» Token Formatter    «13» Onliner           «19» Call Spammer     │",
@@ -262,7 +264,7 @@ class Render:
             "│ «03» Spammer           «09» Accept Rules       «15» Change Nick       «21» Voice Joiner     │",
             "│ «04» Token Checker     «10» Guild Check        «16» Thread Spammer    «22» Onboard Bypass   │",
             "│ «05» Emoji Reaction    «11» Friend Spam        «17» Typer             «23» Dm Spammer       │",
-            "│ «06» ???               «12» ???                «18» ???               «24» Exit             │",
+            "│ «06» Clear Status      «12» Multi-Channel Spam «18» ???               «24» Exit             │",
             "╰─────────────────────────────────────────────────────────────────────────────────────────────╯",
             "«~» Credits"
         ]
@@ -1607,6 +1609,84 @@ class Raider:
             input()
             Menu().main_menu()
 
+    # ==================== 追加機能 ①: ステータス消去 ====================
+    def clear_activity(self):
+        """全トークンのゲームアクティビティとカスタムステータスを強制消去"""
+        for token in tokens:
+            try:
+                # 1. WebSocketで空のアクティビティを送信（ゲームを消す）
+                ws = websocket.WebSocket()
+                ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
+                ws.send(json.dumps({
+                    "op": 2,
+                    "d": {
+                        "token": token,
+                        "properties": {"os": "Windows", "browser": "Discord"},
+                        "presence": {
+                            "status": "online",
+                            "since": 0,
+                            "activities": [],  # ← 空配列でゲームを削除
+                            "afk": False
+                        }
+                    }
+                }))
+                ws.close()
+                
+                # 2. REST APIでカスタムステータス（文字列）を削除
+                session.patch(
+                    "https://discord.com/api/v9/users/@me/settings",
+                    headers=self.headers(token),
+                    json={"custom_status": None}
+                )
+                console.log("Cleared", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+            except Exception as e:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+            time.sleep(0.5)
+
+    # ==================== 追加機能 ②: マルチチャンネルスパマー ====================
+    def multi_channel_spammer(self, token, guild_id, message, pings, delay):
+        """指定サーバーの全テキストチャンネルに一斉送信（1トークン分）"""
+        try:
+            # チャンネル一覧を取得
+            resp = session.get(
+                f"https://discord.com/api/v9/guilds/{guild_id}/channels",
+                headers=self.headers(token)
+            )
+            if resp.status_code != 200:
+                console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "チャンネル取得失敗")
+                return
+
+            channels = resp.json()
+            text_channels = [c for c in channels if c.get('type') == 0]
+            if not text_channels:
+                console.log("Info", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "テキストチャンネルなし")
+                return
+
+            def send_to_channel(channel):
+                c_id = channel['id']
+                content = ("@everyone " * pings) + message if pings > 0 else message
+                try:
+                    r = session.post(
+                        f"https://discord.com/api/v9/channels/{c_id}/messages",
+                        headers=self.headers(token),
+                        json={"content": content}
+                    )
+                    if r.status_code == 200:
+                        console.log("Sent", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id}")
+                    else:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ch {c_id} ({r.status_code})")
+                except Exception as e:
+                    console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
+            # 並列実行（最大5スレッド）
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                executor.map(send_to_channel, text_channels)
+
+            console.log("Cycle Done", C["cyan"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"{len(text_channels)} channels")
+            time.sleep(delay)
+        except Exception as e:
+            console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+
 class Menu:
     def __init__(self):
         global global_raider
@@ -1621,17 +1701,20 @@ class Menu:
         else:
             self.raider = global_raider
 
+        # ★ self.options に 「6」と「12」を追加 ★
         self.options = {
             "1": self.joiner, 
             "2": self.leaver,
             "3": self.spammer, 
             "4": self.checker,
             "5": self.reactor, 
+            "6": self.clear_status,          # ← 追加
             "7": self.formatter,
             "8": self.button,
             "9": self.accept,
             "10": self.guild,
             "11": self.friender,
+            "12": self.multi_channel_spam,   # ← 追加
             "13": self.onliner,
             "14": self.soundbord,
             "15": self.nick_changer,
@@ -1685,6 +1768,31 @@ class Menu:
         input(f"\n   {self.background}~/> press enter to continue ")
         self.main_menu()
 
+    # ==================== 追加機能 ① ラッパー ====================
+    @wrapper
+    def clear_status(self):
+        console.title("Cwelium - Clear Status")
+        self.run(self.raider.clear_activity, [()])
+
+    # ==================== 追加機能 ② ラッパー ====================
+    @wrapper
+    def multi_channel_spam(self):
+        console.title("Cwelium - Multi-Channel Spammer")
+        guild_id = input(console.prompt("Guild ID"))
+        if not guild_id:
+            self.main_menu()
+        message = input(console.prompt("Message"))
+        if not message:
+            self.main_menu()
+        pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
+        delay = float(input(console.prompt("Delay between cycles (秒, 3〜5推奨)")) or "3")
+
+        console.clear()
+        console.render_ascii()
+        args = [(token, guild_id, message, pings, delay) for token in tokens]
+        self.run(self.raider.multi_channel_spammer, args)
+
+    # ==================== 既存ラッパー（そのまま） ====================
     @wrapper
     def dm_spam(self):
         console.title(f"Cwelium - Dm Spammer")
