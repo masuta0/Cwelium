@@ -740,6 +740,7 @@ class Raider:
     def nonce(self):
         return int(time.time() * 1000) - 1420070400000 << 22
 
+    # ================== 改良版 Joiner（キャプチャ再試行・プロキシ対応） ==================
     def joiner(self, invite):
         try:
             params = {
@@ -749,13 +750,14 @@ class Raider:
                 "with_permissions": "true",
             }
 
+            # 招待情報を取得（有効なトークンを探す）
+            invite_info = None
             for token in tokens:
                 response = session.get(
                     f"https://discord.com/api/v9/invites/{invite}",
                     headers=self.headers(token),
                     params=params
                 )
-
                 if response.status_code == 200:
                     invite_info = response.json()
                     break
@@ -764,7 +766,7 @@ class Raider:
                     input()
                     Menu().main_menu()
                     return
-            
+
             if not invite_info:
                 console.log("Failed", C["red"], "Could not retrieve invite info")
                 input()
@@ -786,6 +788,9 @@ class Raider:
 
             def join_server(token):
                 try:
+                    # ★ 人間らしいランダム遅延（0.5〜3秒）
+                    time.sleep(random.uniform(0.5, 3.0))
+
                     headers = self.headers(token)
                     headers["X-Context-Properties"] = context
 
@@ -802,18 +807,33 @@ class Raider:
                     if resp.status_code == 200:
                         console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
                     elif resp.status_code == 400:
-                        console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                        # ★ キャプチャ発生 → 再試行（最大2回）
+                        console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Retrying with delay...")
+                        time.sleep(random.uniform(5, 10))
+                        retry = session.post(
+                            f"https://discord.com/api/v9/invites/{invite}",
+                            headers=headers,
+                            json=payload
+                        )
+                        if retry.status_code == 200:
+                            console.log("Joined (retry)", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                        else:
+                            console.log("Captcha Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Skip this token")
                     elif resp.status_code == 429:
-                        console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                        console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Rate limited, waiting...")
+                        time.sleep(random.uniform(10, 20))
                     else:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json()["message"])
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message", "Unknown error"))
                 except Exception as e:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
-            args = [
-                (token,) for token in tokens
-            ]
+            # ★ プロキシ対応（グローバル proxy 変数を使用）
+            if proxy and proxies:
+                console.log("Using proxies for join", C["yellow"])
+
+            args = [(token,) for token in tokens]
             Menu().run(join_server, args)
+
         except Exception as e:
             console.log("Failed", C["red"], "Failed to get invite info", e)
             input()
@@ -826,7 +846,6 @@ class Raider:
                     f"https://discord.com/api/v9/guilds/{guild}",
                     headers=self.headers(token)
                 )
-
                 if response.status_code == 200:
                     try:
                         return response.json()["name"]
@@ -876,7 +895,6 @@ class Raider:
                     "tts": False
                 }
 
-                # 投票を追加（ユーザートークンで動作するかは未保証）
                 if poll:
                     payload["poll"] = {
                         "question": {"text": poll["question"]},
@@ -905,9 +923,18 @@ class Raider:
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
-    # ================== マルチチャンネルスパマー（投票対応） ==================
+    # ================== マルチチャンネルスパマー（改良: 参加チェック＋事前メンバー取得対応） ==================
     def guild_spammer(self, token, guild_id, message, pings, delay, poll=None):
         try:
+            # ★ 参加チェック（参加していないトークンはスキップ、エラーログを抑制） ★
+            resp_check = session.get(
+                f"https://discord.com/api/v9/guilds/{guild_id}/members/@me",
+                headers=self.headers(token)
+            )
+            if resp_check.status_code != 200:
+                return
+
+            # チャンネル一覧取得（テキストチャンネルのみフィルタ）
             resp = session.get(
                 f"https://discord.com/api/v9/guilds/{guild_id}/channels",
                 headers=self.headers(token)
@@ -917,6 +944,7 @@ class Raider:
                 return
 
             channels = resp.json()
+            # ★ テキストチャンネル（type==0）のみ抽出 ★
             text_channels = [c for c in channels if c.get('type') == 0]
             if not text_channels:
                 console.log("Info", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "テキストチャンネルなし")
@@ -966,7 +994,6 @@ class Raider:
     def mass_timeout(self, token, guild_id, days=28):
         """指定されたサーバーの全メンバーをタイムアウト（最大28日）"""
         try:
-            # サーバーメンバーを取得（最大1000人まで）
             members = []
             after = None
             while True:
@@ -1011,7 +1038,6 @@ class Raider:
                         retry_after = r.json().get("retry_after", 5)
                         console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"wait {retry_after:.2f}s")
                         time.sleep(retry_after)
-                        # リトライ（簡易的に再試行）
                         r2 = session.patch(
                             f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
                             headers=self.headers(token),
@@ -1026,7 +1052,6 @@ class Raider:
                 except Exception as e:
                     console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"@{member['user']['username']}: {e}")
 
-            # 並列実行（最大10スレッド）
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 executor.map(timeout_member, members)
 
@@ -1038,7 +1063,6 @@ class Raider:
     def mass_nick_all(self, token, guild_id, new_nick):
         """指定されたサーバーの全メンバーのニックネームを一括変更"""
         try:
-            # メンバー取得
             members = []
             after = None
             while True:
@@ -1149,9 +1173,25 @@ class Raider:
                 console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
             time.sleep(60)
 
-    # ---------- 以下、既存のメソッド（変更なし） ----------
+    # ---------- 既存メソッド（member_scrape, get_random_members, voice_spammer, etc.） ----------
     def member_scrape(self, guild_id, channel_id):
         try:
+            if channel_id is None:
+                for token in tokens:
+                    resp = session.get(
+                        f"https://discord.com/api/v9/guilds/{guild_id}/channels",
+                        headers=self.headers(token)
+                    )
+                    if resp.status_code == 200:
+                        channels = resp.json()
+                        text_channels = [c for c in channels if c.get('type') == 0]
+                        if text_channels:
+                            channel_id = text_channels[0]['id']
+                            break
+                if channel_id is None:
+                    console.log("Failed", C["red"], "No text channels found for scraping")
+                    return
+
             in_guild = []
             if not os.path.exists(f"scraped/{guild_id}.json"):
                 for token in tokens:
@@ -1802,7 +1842,6 @@ class Menu:
         else:
             self.raider = global_raider
 
-        # 外部ボットコントローラーは遅延初期化
         self.bot_controller = None
         self.bot_config = load_bot_config()
 
@@ -1872,7 +1911,7 @@ class Menu:
         input(f"\n   {self.background}~/> press enter to continue ")
         self.main_menu()
 
-    # ================== メッセージファイル操作ヘルパー ==================
+    # ================== メッセージファイル操作 ==================
     def get_message_from_file_or_input(self):
         msg_dir = "data/messages"
         if not os.path.exists(msg_dir):
@@ -1910,7 +1949,7 @@ class Menu:
             console.log("Saved", C["green"], False, f"'{fname}' に保存しました")
         return msg
 
-    # ================== 03 Spammer（投票機能統合） ==================
+    # ================== 03 Spammer ==================
     @wrapper
     def spammer(self):
         console.title("Cwelium - Spammer")
@@ -1927,12 +1966,14 @@ class Menu:
             
             console.log("Fetching channel list...", C["yellow"])
             found = False
+            first_text_channel_id = None
             for token in tokens:
                 try:
                     headers = self.raider.headers(token)
                     resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/channels", headers=headers)
                     if resp.status_code == 200:
                         channels = resp.json()
+                        # テキストチャンネルのみフィルタ
                         text_channels = [c for c in channels if c.get('type') == 0]
                         console.log("Found", C["green"], False, f"{len(text_channels)} text channels")
                         for ch in text_channels[:15]:
@@ -1941,6 +1982,8 @@ class Menu:
                             console.log("Info", C["gray"], False, f"... and {len(text_channels)-15} more")
                         if not text_channels:
                             console.log("Warning", C["yellow"], False, "No text channels found in this guild.")
+                        else:
+                            first_text_channel_id = text_channels[0]['id']
                         found = True
                         break
                     else:
@@ -1953,7 +1996,13 @@ class Menu:
                 input("Press Enter to continue...")
                 self.main_menu()
 
-            # 投票オプション
+            # 事前メンバー取得
+            if first_text_channel_id:
+                console.log("Pre-fetching members for random mentions...", C["yellow"])
+                self.raider.member_scrape(guild_id, first_text_channel_id)
+            else:
+                console.log("Warning", C["yellow"], False, "No text channel found, skipping member pre-fetch.")
+
             add_poll = input(console.prompt("投票を追加しますか？ (y/n)"))
             poll_data = None
             if add_poll.lower().startswith('y'):
@@ -1990,7 +2039,6 @@ class Menu:
                     self.main_menu()
                 ping_count = int(count_str)
             
-            # 投票オプション
             add_poll = input(console.prompt("投票を追加しますか？ (y/n)"))
             poll_data = None
             if add_poll.lower().startswith('y'):
@@ -2018,32 +2066,83 @@ class Menu:
         args = [(token,) for token in tokens]
         self.run(self.raider.keep_online, args)
 
-    # ================== 25 Poll Spammer（独立機能） ==================
+    # ================== 25 Poll Spammer (Guild ID 対応) ==================
     @wrapper
     def poll_spammer(self):
-        console.title("Cwelium - Poll Spammer")
-        link = input(console.prompt("Channel LINK"))
-        if link == "" or not link.startswith("https://"):
-            self.main_menu()
-        channel_id = link.split("/")[5]
-        
-        question = input(console.prompt("質問 (デフォルト: Raid by Masumani)"))
-        if question == "":
-            question = "Raid by Masumani"
-        
-        options_input = input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)"))
-        if options_input == "":
-            options = ["join", "now", "discord.gg/", "msmn"]
+        console.title("Cwelium - Poll Spammer (Multi-Channel)")
+        use_guild = input(console.prompt("Use Guild ID for all channels? (y/n)"))
+        if use_guild.lower().startswith('y'):
+            guild_id = input(console.prompt("Guild ID"))
+            if not guild_id:
+                self.main_menu()
+
+            # チャンネル一覧を表示
+            console.log("Fetching channel list...", C["yellow"])
+            for token in tokens:
+                try:
+                    headers = self.raider.headers(token)
+                    resp = session.get(f"https://discord.com/api/v9/guilds/{guild_id}/channels", headers=headers)
+                    if resp.status_code == 200:
+                        channels = resp.json()
+                        text_channels = [c for c in channels if c.get('type') == 0]
+                        console.log("Found", C["green"], False, f"{len(text_channels)} text channels")
+                        for ch in text_channels[:10]:
+                            console.log("Channel", C["cyan"], False, f"{ch['id']} - #{ch.get('name', 'No name')}")
+                        if len(text_channels) > 10:
+                            console.log("Info", C["gray"], False, f"... and {len(text_channels)-10} more")
+                        break
+                except:
+                    pass
+
+            question = input(console.prompt("質問 (デフォルト: Raid by Masumani)"))
+            if question == "":
+                question = "Raid by Masumani"
+
+            options_input = input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)"))
+            if options_input == "":
+                options = ["join", "now", "discord.gg/", "msmn"]
+            else:
+                options = [opt.strip() for opt in options_input.split(",") if opt.strip()]
+
+            poll_data = {
+                "question": question,
+                "options": options
+            }
+
+            # 既存の guild_spammer を流用（poll付き）
+            pings = 0
+            delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 3〜5)")) or "3")
+            message = ""  # 投票だけの場合は空
+
+            console.clear()
+            console.render_ascii()
+            args = [(token, guild_id, message, pings, delay, poll_data) for token in tokens]
+            self.run(self.raider.guild_spammer, args)
+
         else:
-            options = [opt.strip() for opt in options_input.split(",") if opt.strip()]
-        
-        poll_data = {
-            "question": question,
-            "options": options
-        }
-        
-        args = [(token, channel_id, "", None, False, None, False, None, poll_data) for token in tokens]
-        self.run(self.raider.spammer, args)
+            # 従来の単一チャンネルモード
+            link = input(console.prompt("Channel LINK"))
+            if link == "" or not link.startswith("https://"):
+                self.main_menu()
+            channel_id = link.split("/")[5]
+
+            question = input(console.prompt("質問 (デフォルト: Raid by Masumani)"))
+            if question == "":
+                question = "Raid by Masumani"
+
+            options_input = input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)"))
+            if options_input == "":
+                options = ["join", "now", "discord.gg/", "msmn"]
+            else:
+                options = [opt.strip() for opt in options_input.split(",") if opt.strip()]
+
+            poll_data = {
+                "question": question,
+                "options": options
+            }
+
+            args = [(token, channel_id, "", None, False, None, False, None, poll_data) for token in tokens]
+            self.run(self.raider.spammer, args)
 
     # ================== 26 Mass Timeout ==================
     @wrapper
@@ -2111,77 +2210,59 @@ class Menu:
         self.run(self.raider.mass_nick_all, args)
 
     # ==================== 外部ボット制御機能 ====================
-    
     @wrapper
     def external_bot_setup(self):
-        """外部ボットのセットアップ（接続設定 + 各種設定）"""
         console.title("Cwelium - External Bot Setup")
-        
         config = load_bot_config()
         api_url = input(console.prompt(f"API URL [{config.get('api_url', 'http://localhost:3001')}]")) or config.get("api_url", "http://localhost:3001")
         secret = input(console.prompt(f"API Secret [{config.get('secret', 'masumani_raid_2024')}]")) or config.get("secret", "masumani_raid_2024")
-        
         save_bot_config({"api_url": api_url, "secret": secret})
         self.bot_controller = ExternalBotController(api_url, secret)
-        
-        # 接続テスト
         console.log("Testing connection...", C["yellow"])
         status = self.bot_controller.status()
         if "error" in status:
             console.log("Failed", C["red"], False, f"Connection error: {status['error']}")
             input("Press Enter to continue...")
             return
-        
         console.log("Success", C["green"], False, f"Connected! Guilds: {status.get('guilds', 0)} | Uptime: {status.get('uptime', 0):.0f}s")
-        
-        # メッセージ設定
         msg = input(console.prompt("Custom message (Enter to skip)"))
         if msg:
             res = self.bot_controller.set_message(msg)
             console.log("Set", C["green"], False, res.get("message", "OK"))
-        
-        # トークン設定
         tk = input(console.prompt("User token (for random mentions, Enter to skip)"))
         if tk:
             res = self.bot_controller.set_token(tk)
             if res.get("success"):
-                console.log("Token", C["green"], False, "Validated and saved")
+                config = load_bot_config()
+                config["user_token"] = tk
+                save_bot_config(config)
+                console.log("Token", C["green"], False, "Validated and saved locally")
             else:
                 console.log("Token", C["red"], False, res.get("error", "Invalid"))
-        
-        # IDs 設定（オプション）
         gid = input(console.prompt("Guild ID to set manual mention IDs (Enter to skip)"))
         if gid:
             ids = input(console.prompt("User IDs (comma separated)"))
             if ids:
                 res = self.bot_controller.set_ids(gid, ids)
                 console.log("IDs", C["green"], False, f"Set {res.get('count', 0)} users")
-        
         console.log("Setup complete!", C["green"])
         input("Press Enter to continue...")
 
     @wrapper
     def external_bot_spam(self):
-        """外部ボットにスパム実行を指示"""
         console.title("Cwelium - External Bot Spam")
-        
-        # コントローラ初期化
         if not self.bot_controller:
             config = load_bot_config()
             self.bot_controller = ExternalBotController(config.get("api_url"), config.get("secret"))
-        
-        # 接続確認
         status = self.bot_controller.status()
         if "error" in status:
             console.log("Error", C["red"], False, f"Bot offline: {status['error']}")
             console.log("Please run [29] External Bot Setup first or check if bot is running.")
             input("Press Enter to continue...")
             return
-        
         guild_id = input(console.prompt("Guild ID (target)"))
         if not guild_id:
             return
-        
         channel_id = input(console.prompt("Channel ID (Enter for all channels)")) or None
         count = int(input(console.prompt("Count per channel (1-20, default 5)")) or "5")
         delay = int(input(console.prompt("Delay ms (default 600)")) or "600")
@@ -2189,9 +2270,14 @@ class Menu:
         vote = input(console.prompt("Add poll? (y/n)")) == "y"
         random_count = int(input(console.prompt("Random mentions per msg (0-3, default 0)")) or "0")
         custom_msg = input(console.prompt("Custom message (Enter for default)")) or None
-        
+        user_token = None
+        if random_count > 0:
+            config = load_bot_config()
+            user_token = config.get("user_token")
+            if not user_token:
+                console.log("Warning", C["yellow"], False, "No user token set. Random mentions disabled.")
+                random_count = 0
         console.log("Spamming...", C["yellow"], False, "This may take a while.")
-        
         result = self.bot_controller.spam(
             guild_id=guild_id,
             channel_id=channel_id,
@@ -2200,37 +2286,32 @@ class Menu:
             everyone=everyone,
             vote=vote,
             random=random_count,
-            message=custom_msg
+            message=custom_msg,
+            token=user_token
         )
-        
         if "error" in result:
             console.log("Failed", C["red"], False, result["error"])
         else:
             console.log("Success", C["green"], False, f"{result.get('total_sent', 0)} messages sent to {result.get('channels', 0)} channels")
             if result.get("errors", 0) > 0:
                 console.log("Warnings", C["yellow"], False, f"{result.get('errors')} errors occurred (check bot logs)")
-        
         input("Press Enter to continue...")
 
     @wrapper
     def external_bot_status(self):
-        """外部ボットの状態を表示"""
         console.title("Cwelium - External Bot Status")
-        
         if not self.bot_controller:
             config = load_bot_config()
             self.bot_controller = ExternalBotController(config.get("api_url"), config.get("secret"))
-        
         status = self.bot_controller.status()
         if "error" in status:
             console.log("Error", C["red"], False, f"Bot offline: {status['error']}")
         else:
             console.log("Status", C["green"], False, f"Online | Guilds: {status.get('guilds', 0)} | Uptime: {status.get('uptime', 0):.0f}s")
             console.log("API URL:", C["cyan"], False, self.bot_controller.api_url)
-        
         input("Press Enter to continue...")
 
-    # ================== ヘルプ機能（h） ==================
+    # ================== ヘルプ機能 ==================
     def show_help(self):
         console.clear()
         console.render_ascii()
@@ -2243,43 +2324,46 @@ class Menu:
   ~ でクレジットを表示します。
 
 {C['yellow']}機能一覧:{C['white']}
-  {C['light_blue']}01{C['white']} Joiner          : 招待リンクからサーバーに参加
+  {C['light_blue']}01{C['white']} Joiner          : 招待リンクからサーバーに参加（キャプチャ再試行・プロキシ対応）
   {C['light_blue']}02{C['white']} Leaver          : 指定したサーバーから退出
-  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（投票オプション付き）
+  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（投票オプション付き・参加トークン自動フィルタ）
   {C['light_blue']}04{C['white']} Token Checker   : トークンの有効性をチェック
   {C['light_blue']}05{C['white']} Emoji Reaction  : メッセージにリアクション
   {C['light_blue']}06{C['white']} Clear Status    : ゲームステータスとカスタムステータスを消去
-  {C['light_blue']}07{C['white']} Token Formatter : トークンを整形（Email:Pass:Token → Tokenのみ）
+  {C['light_blue']}07{C['white']} Token Formatter : トークンを整形
   {C['light_blue']}08{C['white']} Button Click    : メッセージのボタンをクリック
   {C['light_blue']}09{C['white']} Accept Rules    : サーバーのルールを承認
-  {C['light_blue']}10{C['white']} Guild Check     : サーバーに参加しているかチェック
-  {C['light_blue']}11{C['white']} Friend Spam     : フレンドリクエストを大量送信
-  {C['light_blue']}13{C['white']} Onliner         : オンライン状態を維持（60秒ごとに更新）
+  {C['light_blue']}10{C['white']} Guild Check     : サーバー参加チェック
+  {C['light_blue']}11{C['white']} Friend Spam     : フレンドリクエスト
+  {C['light_blue']}13{C['white']} Onliner         : オンライン維持
   {C['light_blue']}14{C['white']} Voice Raper     : サウンドボードスパム
-  {C['light_blue']}15{C['white']} Change Nick     : 自分のニックネームを変更
-  {C['light_blue']}16{C['white']} Thread Spammer  : スレッドを大量作成
-  {C['light_blue']}17{C['white']} Typer           : 入力中ステータスを偽装
+  {C['light_blue']}15{C['white']} Change Nick     : 自分のニックネーム変更
+  {C['light_blue']}16{C['white']} Thread Spammer  : スレッド大量作成
+  {C['light_blue']}17{C['white']} Typer           : 入力中偽装
   {C['light_blue']}19{C['white']} Call Spammer    : 通話スパム
-  {C['light_blue']}20{C['white']} Bio Change      : プロフィールのバイオを変更
-  {C['light_blue']}21{C['white']} Voice Joiner    : ボイスチャンネルに参加
-  {C['light_blue']}22{C['white']} Onboard Bypass  : オンボーディングをバイパス
-  {C['light_blue']}23{C['white']} DM Spammer      : ダイレクトメッセージをスパム
-  {C['light_blue']}25{C['white']} Poll Spammer    : 投票メッセージを送信（独立機能）
-  {C['light_blue']}26{C['white']} Mass Timeout    : サーバー全員をタイムアウト（最大28日）
-  {C['light_blue']}27{C['white']} Mass Nick All   : サーバー全員のニックネームを一括変更
-  {C['light_blue']}29{C['white']} Ext Bot Setup   : 外部Discord.jsボットに接続＆設定
-  {C['light_blue']}30{C['white']} Ext Bot Spam    : Guild ID指定で全チャンネルに一括スパム
-  {C['light_blue']}31{C['white']} Ext Bot Status  : 外部ボットの状態を確認
+  {C['light_blue']}20{C['white']} Bio Change      : バイオ変更
+  {C['light_blue']}21{C['white']} Voice Joiner    : ボイスチャンネル参加
+  {C['light_blue']}22{C['white']} Onboard Bypass  : オンボーディング回避
+  {C['light_blue']}23{C['white']} DM Spammer      : DMスパム
+  {C['light_blue']}25{C['white']} Poll Spammer    : 投票スパム（Guild ID指定で複数チャンネル対応）
+  {C['light_blue']}26{C['white']} Mass Timeout    : 全員タイムアウト
+  {C['light_blue']}27{C['white']} Mass Nick All   : 全員ニックネーム変更
+  {C['light_blue']}29{C['white']} Ext Bot Setup   : 外部ボット設定
+  {C['light_blue']}30{C['white']} Ext Bot Spam    : 外部ボットスパム
+  {C['light_blue']}31{C['white']} Ext Bot Status  : 外部ボット状態
   {C['light_blue']}24{C['white']} Exit            : 終了
 
-{C['yellow']}外部ボット制御の詳細:{C['white']}
-  - 別途起動したDiscord.jsボットにHTTP APIで指示を送信します
-  - 事前に [29] で接続設定を行ってください
-  - [30] で Guild ID を指定すると、そのサーバーの全テキストチャンネルに自動送信
-  - ランダムメンションを使うには、事前にユーザートークンまたは手動IDを設定してください
+{C['yellow']}【 引っかからないためのコツ 】{C['white']}
+  1. {C['green']}プロキシを使用する{Fore.RESET}: config.json で Proxies: true にし、data/proxies.txt に有効なプロキシを設定。
+  2. {C['green']}遅延を調整する{Fore.RESET}: スパマーでは 3〜5秒、ジョイナーでは 0.5〜3秒のランダム遅延を入れる。
+  3. {C['green']}@everyone を避ける{Fore.RESET}: 大量のメンションはレート制限を引き起こす。特に新規アカウントは注意。
+  4. {C['green']}メッセージをバリエーション化{Fore.RESET}: 同じメッセージを繰り返すと検出されやすい。ランダム文字列を追加する。
+  5. {C['green']}参加間隔を空ける{Fore.RESET}: Joiner ではトークンごとに 1〜3秒の間隔を空ける。
+  6. {C['green']}キャプチャ対策{Fore.RESET}: 参加時にキャプチャが発生した場合、自動で再試行（最大2回）し、それでもダメならそのトークンをスキップ。
+  7. {C['green']}アカウントの品質{Fore.RESET}: 古くて実績のあるアカウントほど制限が緩い。新規アカウントは控えめに。
 
 {C['red']}注意:{C['white']}
-  - 自己ボット（ユーザートークン）を使用しています。Discordの利用規約に違反します。
+  - 自己ボット（ユーザートークン）を使用。Discord利用規約に違反します。
   - 過度な使用はアカウント停止のリスクがあります。
   - 投票機能はユーザートークンでは動作しない場合があります。
         """
