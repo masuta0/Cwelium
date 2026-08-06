@@ -912,7 +912,7 @@ class Raider:
     # ================== マルチチャンネルスパマー（SHOULD_STOP対応・参加チェック） ==================
     def guild_spammer(self, token, guild_id, message, pings, delay, poll=None):
         try:
-            # ★ 参加チェック（参加していないトークンはスキップ、エラーログを抑制） ★
+            # ★ 参加チェック（参加していないトークンはスキップ） ★
             resp_check = session.get(
                 f"https://discord.com/api/v9/guilds/{guild_id}/members/@me",
                 headers=self.headers(token)
@@ -920,7 +920,7 @@ class Raider:
             if resp_check.status_code != 200:
                 return
 
-            # チャンネル一覧取得
+            # チャンネル一覧取得（テキストチャンネルのみ）
             resp = session.get(
                 f"https://discord.com/api/v9/guilds/{guild_id}/channels",
                 headers=self.headers(token)
@@ -975,8 +975,9 @@ class Raider:
         except Exception as e:
             console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
-    # ================== サーバー参加トークン取得 ==================
-    def get_valid_token_for_guild(self, guild_id):
+    # ================== 参加トークン取得（フィルタリング用） ==================
+    def get_valid_tokens_for_guild(self, guild_id):
+        valid = []
         for token in tokens:
             try:
                 resp = session.get(
@@ -984,10 +985,12 @@ class Raider:
                     headers=self.headers(token)
                 )
                 if resp.status_code == 200:
-                    return token
-            except:
-                continue
-        return None
+                    valid.append(token)
+                else:
+                    console.log("Skip", C["gray"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"未参加 or 無効 ({resp.status_code})")
+            except Exception as e:
+                console.log("Skip", C["gray"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", str(e))
+        return valid
 
     # ================== メンバー取得 ==================
     def member_scrape(self, guild_id, channel_id):
@@ -1008,13 +1011,13 @@ class Raider:
                     console.log("Failed", C["red"], "No text channels found for scraping")
                     return
 
-            valid_token = self.get_valid_token_for_guild(guild_id)
-            if not valid_token:
+            valid_tokens = self.get_valid_tokens_for_guild(guild_id)
+            if not valid_tokens:
                 console.log("Failed", C["red"], "No token found in guild")
                 return
 
             if not os.path.exists(f"scraped/{guild_id}.json"):
-                members = scrape(valid_token, guild_id, channel_id)
+                members = scrape(random.choice(valid_tokens), guild_id, channel_id)
                 with open(f"scraped/{guild_id}.json", "w") as f:
                     json.dump(list(members.keys()), f, indent=2)
         except Exception as e:
@@ -1920,6 +1923,13 @@ class Menu:
         console.clear()
         console.render_ascii()
         
+        # ★ スレッドが0件の場合は即座に戻る ★
+        if not args:
+            console.log("Error", C["red"], False, "実行するスレッドがありません。")
+            input("Press Enter to continue...")
+            self.main_menu()
+            return
+        
         # 終了監視スレッド
         def input_listener():
             global SHOULD_STOP
@@ -1947,6 +1957,14 @@ class Menu:
             t = threading.Thread(target=func, args=arg, daemon=True)
             threads.append(t)
             t.start()
+        
+        # ★ スレッドが1つも起動しなかった場合のハンドリング ★
+        if not threads:
+            console.log("Error", C["red"], False, "スレッドが起動しませんでした。トークンを確認してください。")
+            SHOULD_STOP = True
+            input("Press Enter to continue...")
+            self.main_menu()
+            return
         
         # スレッド終了待機（終了フラグで中断可能）
         while any(t.is_alive() for t in threads):
@@ -1997,7 +2015,7 @@ class Menu:
             console.log("Saved", C["green"], False, f"'{fname}' に保存しました")
         return msg
 
-    # ================== 03 Spammer（改良: run_spammer 使用） ==================
+    # ================== 03 Spammer（絶対に動く完全版） ==================
     @wrapper
     def spammer(self):
         console.title("Cwelium - Spammer")
@@ -2012,6 +2030,7 @@ class Menu:
             if not guild_id:
                 self.main_menu()
             
+            # ===== チャンネル一覧表示（参加トークンから選択） =====
             console.log("Fetching channel list...", C["yellow"])
             found = False
             first_text_channel_id = None
@@ -2043,7 +2062,7 @@ class Menu:
                 input("Press Enter to continue...")
                 self.main_menu()
 
-            # 事前メンバー取得（改良版：get_valid_token_for_guild を使用）
+            # ===== 事前メンバー取得（ランダムメンション用） =====
             if first_text_channel_id:
                 console.log("Pre-fetching members for random mentions...", C["yellow"])
                 self.raider.member_scrape(guild_id, first_text_channel_id)
@@ -2061,11 +2080,24 @@ class Menu:
 
             pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
             delay = float(input(console.prompt("Delay between cycles (秒, 3〜5推奨)")) or "3")
+            
+            # ===== ★ 絶対に動くフィルタリング：参加トークンのみ抽出 ★ =====
+            console.log("Filtering tokens in guild...", C["yellow"])
+            valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
+            
+            if not valid_tokens:
+                console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
+                input("Press Enter to continue...")
+                self.main_menu()
+            
+            console.log("Info", C["green"], False, f"{len(valid_tokens)}/{len(tokens)} 個のトークンが参加しています。")
             console.clear()
             console.render_ascii()
-            args = [(token, guild_id, message, pings, delay, poll_data) for token in tokens]
+            args = [(token, guild_id, message, pings, delay, poll_data) for token in valid_tokens]
             self.run_spammer(self.raider.guild_spammer, args)
+            
         else:
+            # ===== チャンネル指定モード（同様にフィルタリング） =====
             link = input(console.prompt("Channel LINK"))
             if link == "" or not link.startswith("https://"):
                 self.main_menu()
@@ -2095,9 +2127,20 @@ class Menu:
                 }
                 console.log("Poll", C["green"], False, "質問: 'Raid by Masumani', 選択肢: join, now, discord.gg/, msmn")
 
+            # ★ フィルタリング ★
+            console.log("Filtering tokens in guild...", C["yellow"])
+            valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
+            
+            if not valid_tokens:
+                console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
+                input("Press Enter to continue...")
+                self.main_menu()
+            
+            console.log("Info", C["green"], False, f"{len(valid_tokens)}/{len(tokens)} 個のトークンが参加しています。")
+
             args = [
                 (token, channel_id, message, guild_id, "y" in massping, ping_count, "y" in random_str, delay, poll_data)
-                for token in tokens
+                for token in valid_tokens
             ]
             self.run_spammer(self.raider.spammer, args)
 
@@ -2159,9 +2202,16 @@ class Menu:
             delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 3〜5)")) or "3")
             message = ""
 
+            # ★ フィルタリング ★
+            valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
+            if not valid_tokens:
+                console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
+                input("Press Enter to continue...")
+                self.main_menu()
+
             console.clear()
             console.render_ascii()
-            args = [(token, guild_id, message, pings, delay, poll_data) for token in tokens]
+            args = [(token, guild_id, message, pings, delay, poll_data) for token in valid_tokens]
             self.run_spammer(self.raider.guild_spammer, args)
         else:
             link = input(console.prompt("Channel LINK"))
@@ -2184,7 +2234,15 @@ class Menu:
                 "options": options
             }
 
-            args = [(token, channel_id, "", None, False, None, False, None, poll_data) for token in tokens]
+            # チャンネル指定モードではサーバーIDを取得してフィルタリング
+            guild_id = link.split("/")[4]
+            valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
+            if not valid_tokens:
+                console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
+                input("Press Enter to continue...")
+                self.main_menu()
+
+            args = [(token, channel_id, "", None, False, None, False, None, poll_data) for token in valid_tokens]
             self.run_spammer(self.raider.spammer, args)
 
     # ================== 26 Mass Timeout ==================
@@ -2369,7 +2427,7 @@ class Menu:
 {C['yellow']}機能一覧:{C['white']}
   {C['light_blue']}01{C['white']} Joiner          : 招待リンクからサーバーに参加（キャプチャ再試行・プロキシ対応）
   {C['light_blue']}02{C['white']} Leaver          : 指定したサーバーから退出
-  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（投票オプション付き・参加トークン自動フィルタ）
+  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（投票・ランダムメンション・永久ループ）
   {C['light_blue']}04{C['white']} Token Checker   : トークンの有効性をチェック
   {C['light_blue']}05{C['white']} Emoji Reaction  : メッセージにリアクション
   {C['light_blue']}06{C['white']} Clear Status    : ゲームステータスとカスタムステータスを消去
@@ -2389,21 +2447,21 @@ class Menu:
   {C['light_blue']}22{C['white']} Onboard Bypass  : オンボーディング回避
   {C['light_blue']}23{C['white']} DM Spammer      : DMスパム
   {C['light_blue']}25{C['white']} Poll Spammer    : 投票スパム（Guild ID指定で複数チャンネル対応）
-  {C['light_blue']}26{C['white']} Mass Timeout    : 全員タイムアウト
-  {C['light_blue']}27{C['white']} Mass Nick All   : 全員ニックネーム変更
+  {C['light_blue']}26{C['white']} Mass Timeout    : 全員タイムアウト（最大28日）
+  {C['light_blue']}27{C['white']} Mass Nick All   : 全員ニックネーム一括変更
   {C['light_blue']}29{C['white']} Ext Bot Setup   : 外部ボット設定
   {C['light_blue']}30{C['white']} Ext Bot Spam    : 外部ボットスパム
   {C['light_blue']}31{C['white']} Ext Bot Status  : 外部ボット状態
   {C['light_blue']}24{C['white']} Exit            : 終了
 
 {C['yellow']}【 引っかからないためのコツ 】{C['white']}
-  1. {C['green']}プロキシを使用する{Fore.RESET}: config.json で Proxies: true にし、data/proxies.txt に有効なプロキシを設定。
-  2. {C['green']}遅延を調整する{Fore.RESET}: スパマーでは 3〜5秒、ジョイナーでは 0.5〜3秒のランダム遅延を入れる。
-  3. {C['green']}@everyone を避ける{Fore.RESET}: 大量のメンションはレート制限を引き起こす。
-  4. {C['green']}メッセージをバリエーション化{Fore.RESET}: ランダム文字列を追加する。
-  5. {C['green']}参加間隔を空ける{Fore.RESET}: Joiner ではトークンごとに 1〜3秒の間隔を空ける。
-  6. {C['green']}キャプチャ対策{Fore.RESET}: 参加時にキャプチャが発生した場合、自動で再試行（最大2回）。
-  7. {C['green']}アカウントの品質{Fore.RESET}: 古くて実績のあるアカウントほど制限が緩い。
+  1. {C['green']}プロキシを使用する{Fore.RESET}: config.json で Proxies: true
+  2. {C['green']}遅延を調整する{Fore.RESET}: スパマー 3〜5秒、ジョイナー 0.5〜3秒
+  3. {C['green']}@everyone を避ける{Fore.RESET}: レート制限の原因
+  4. {C['green']}メッセージをバリエーション化{Fore.RESET}: ランダム文字列追加
+  5. {C['green']}参加間隔を空ける{Fore.RESET}: トークンごとに1〜3秒
+  6. {C['green']}キャプチャ対策{Fore.RESET}: 自動再試行（最大2回）
+  7. {C['green']}アカウントの品質{Fore.RESET}: 古いアカウントほど制限緩い
 
 {C['red']}注意:{C['white']}
   - 自己ボット（ユーザートークン）を使用。Discord利用規約に違反します。
