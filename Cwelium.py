@@ -88,7 +88,7 @@ class JsonWrapper:
 
 json = JsonWrapper()
 
-# グローバルセッションは残すが、主にヘッダー取得などに限定
+# グローバルセッション（主にメインスレッドでのAPI取得に使用）
 session = curl_cffi.Session(impersonate="chrome136")
 
 def get_random_str(length):
@@ -758,7 +758,7 @@ class Raider:
                     }
         return self._thread_local.session
 
-    # ========== 参加チェック（リトライ・レート制限対応） ==========
+    # ========== 参加チェック（スレッドローカルセッション版：guild_spammer用） ==========
     def check_membership(self, token, guild_id, retries=3):
         """トークンが指定サーバーに参加しているか確認（429リトライ付き）"""
         for attempt in range(retries):
@@ -775,14 +775,37 @@ class Raider:
                     console.log("Ratelimit", C["yellow"], f"{token[:15]}...", f"membership wait {wait:.1f}s")
                     time.sleep(wait)
                 else:
-                    # 403, 404 など → 未参加 or 無効
                     return False
             except Exception as e:
                 console.log("Error", C["red"], f"{token[:15]}...", f"check_membership: {e}")
                 time.sleep(1)
         return False
 
-    # ========== テキストチャンネル取得（リトライ・レート制限対応） ==========
+    # ========== 参加チェック（グローバルセッション版：member_scrape用） ==========
+    def check_membership_global(self, token, guild_id, retries=3):
+        """グローバルセッションを使った参加チェック（メインスレッド専用）"""
+        for attempt in range(retries):
+            try:
+                resp = session.get(
+                    f"https://discord.com/api/v9/guilds/{guild_id}/members/@me",
+                    headers=self.headers(token)
+                )
+                if resp.status_code == 200:
+                    return True
+                elif resp.status_code == 429:
+                    wait = resp.json().get('retry_after', 5) + random.uniform(0, 2)
+                    console.log("Ratelimit", C["yellow"], f"{token[:15]}...", f"membership wait {wait:.1f}s")
+                    time.sleep(wait)
+                else:
+                    # ステータスコードをログ出力（デバッグ用）
+                    console.log("Check", C["gray"], f"{token[:15]}...", f"status {resp.status_code}")
+                    return False
+            except Exception as e:
+                console.log("Error", C["red"], f"{token[:15]}...", f"check_membership_global: {e}")
+                time.sleep(1)
+        return False
+
+    # ========== テキストチャンネル取得（スレッドローカルセッション版） ==========
     def get_text_channels(self, token, guild_id, retries=2):
         """サーバーのテキストチャンネル一覧を取得（429リトライ付き）"""
         for attempt in range(retries):
@@ -847,7 +870,7 @@ class Raider:
     def guild_spammer(self, token, guild_id, message, pings, delay, poll=None):
         """全テキストチャンネルにスパムを送り続ける（SHOULD_STOPで停止）"""
         try:
-            # 参加チェック
+            # 参加チェック（スレッドローカルセッション）
             if not self.check_membership(token, guild_id):
                 console.log("Skip", C["gray"], f"{token[:15]}...", "not in guild")
                 return
@@ -910,12 +933,12 @@ class Raider:
         except Exception as e:
             console.log("Error", C["red"], f"{token[:15]}...", f"spammer: {e}")
 
-    # ========== 参加トークンのフィルタリング（改良版） ==========
+    # ========== 参加トークンのフィルタリング（グローバルセッション版） ==========
     def get_valid_tokens_for_guild(self, guild_id):
-        """指定サーバーに参加しているトークンのみを抽出（check_membership利用）"""
+        """指定サーバーに参加しているトークンのみを抽出（グローバルセッション使用）"""
         valid = []
         for token in tokens:
-            if self.check_membership(token, guild_id):
+            if self.check_membership_global(token, guild_id):
                 valid.append(token)
             else:
                 console.log("Skip", C["gray"], f"{token[:15]}...", "not in guild")
@@ -1951,10 +1974,8 @@ class Menu:
         console.render_ascii()
         for idx, arg in enumerate(args):
             if proxy and proxies:
-                selected_proxy = proxies[idx % len(proxies)]
-                # スレッドローカルセッションにプロキシを設定するために、
-                # 関数内で get_session() が呼ばれたときに設定される。
-                # ここでは何もしない（各スレッドの get_session() でランダムに選ばれる）
+                # プロキシは各スレッドの get_session() 内でランダムに選択される
+                pass
             thread = threading.Thread(target=func, args=arg, daemon=True)
             threads.append(thread)
             thread.start()
@@ -2135,7 +2156,7 @@ class Menu:
             pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
             delay = float(input(console.prompt("Delay between cycles (秒, 3〜5推奨)")) or "3")
 
-            # 参加トークンのフィルタリング
+            # 参加トークンのフィルタリング（グローバルセッション版）
             console.log("Filtering tokens in guild...", C["yellow"])
             valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
 
@@ -2181,7 +2202,7 @@ class Menu:
                 }
                 console.log("Poll", C["green"], False, "質問: 'Raid by Masumani', 選択肢: join, now, discord.gg/, msmn")
 
-            # フィルタリング
+            # フィルタリング（グローバルセッション版）
             console.log("Filtering tokens in guild...", C["yellow"])
             valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
 
@@ -2256,7 +2277,7 @@ class Menu:
             delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 3〜5)")) or "3")
             message = ""
 
-            # フィルタリング
+            # フィルタリング（グローバルセッション版）
             valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
             if not valid_tokens:
                 console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
