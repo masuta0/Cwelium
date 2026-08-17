@@ -58,10 +58,10 @@ def load_config():
     return {
         "Proxies": True,
         "Theme": "light_blue",
-        "DelayMean": 3.0,
-        "DelayStd": 1.0,
-        "MinDelay": 1.5,
-        "MaxDelay": 8.0,
+        "DelayMean": 4.0,
+        "DelayStd": 1.5,
+        "MinDelay": 2.0,
+        "MaxDelay": 10.0,
         "UseTyping": True,
         "MessageVariation": True,
         "JoinerRetries": 0,
@@ -70,8 +70,8 @@ def load_config():
         "GlobalRateLimit": True,
         "RateLimitPerSecond": 2,
         "StatusRotation": True,
-        "StatusInterval": 300,
-        "CustomStatuses": ["Cwelium Raid", "Discord", "Auto"],
+        "StatusInterval": 180,
+        "CustomStatuses": ["Playing Games", "Listening to Music", "Watching YouTube"],
     }
 
 def save_config(config):
@@ -163,10 +163,10 @@ class Files:
                 data = {
                     "Proxies": True,
                     "Theme": "light_blue",
-                    "DelayMean": 3.0,
-                    "DelayStd": 1.0,
-                    "MinDelay": 1.5,
-                    "MaxDelay": 8.0,
+                    "DelayMean": 4.0,
+                    "DelayStd": 1.5,
+                    "MinDelay": 2.0,
+                    "MaxDelay": 10.0,
                     "UseTyping": True,
                     "MessageVariation": True,
                     "JoinerRetries": 0,
@@ -175,8 +175,8 @@ class Files:
                     "GlobalRateLimit": True,
                     "RateLimitPerSecond": 2,
                     "StatusRotation": True,
-                    "StatusInterval": 300,
-                    "CustomStatuses": ["Cwelium Raid", "Discord", "Auto"],
+                    "StatusInterval": 180,
+                    "CustomStatuses": ["Playing Games", "Listening to Music", "Watching YouTube"],
                 }
                 with open("config.json", "w") as f:
                     json.dump(data, f, indent=4)
@@ -212,10 +212,10 @@ Files.run_tasks()
 config = load_config()
 proxy = config.get("Proxies", True)
 color = config.get("Theme", "light_blue")
-delay_mean = config.get("DelayMean", 3.0)
-delay_std = config.get("DelayStd", 1.0)
-min_delay = config.get("MinDelay", 1.5)
-max_delay = config.get("MaxDelay", 8.0)
+delay_mean = config.get("DelayMean", 4.0)
+delay_std = config.get("DelayStd", 1.5)
+min_delay = config.get("MinDelay", 2.0)
+max_delay = config.get("MaxDelay", 10.0)
 use_typing = config.get("UseTyping", True)
 message_variation = config.get("MessageVariation", True)
 joiner_retries = config.get("JoinerRetries", 0)
@@ -224,14 +224,14 @@ joiner_delay_max = config.get("JoinerDelayMax", 30)
 global_rate_limit = config.get("GlobalRateLimit", True)
 rate_limit_per_second = config.get("RateLimitPerSecond", 2)
 status_rotation = config.get("StatusRotation", True)
-status_interval = config.get("StatusInterval", 300)
-custom_statuses = config.get("CustomStatuses", ["Cwelium Raid", "Discord", "Auto"])
+status_interval = config.get("StatusInterval", 180)
+custom_statuses = config.get("CustomStatuses", ["Playing Games", "Listening to Music", "Watching YouTube"])
 global_raider = None
 
 # ==================== グローバルレートリミッター ====================
 class GlobalRateLimiter:
     def __init__(self):
-        self.buckets = defaultdict(list)  # endpoint -> list of request timestamps
+        self.buckets = defaultdict(list)
         self.lock = threading.Lock()
         self.per_second = rate_limit_per_second
 
@@ -240,7 +240,6 @@ class GlobalRateLimiter:
             return True
         with self.lock:
             now = time.time()
-            # 1秒以内のリクエストをフィルタ
             self.buckets[endpoint] = [t for t in self.buckets[endpoint] if now - t < 1.0]
             if len(self.buckets[endpoint]) >= self.per_second:
                 return False
@@ -623,6 +622,23 @@ def scrape(token, guild_id, channel_id):
 # ============================================================================
 class Raider:
     def __init__(self):
+        global proxies, tokens  # グローバル変数として宣言
+        
+        # ★ ファイルから強制的に読み込み（Render.raider_options に依存しない）
+        try:
+            with open("data/proxies.txt") as f:
+                proxies = [p.strip() for p in f.read().splitlines() if p.strip()]
+        except FileNotFoundError:
+            proxies = []
+            console.log("Warning", C["yellow"], False, "proxies.txt not found, using no proxy")
+        
+        try:
+            with open("data/tokens.txt", "r") as f:
+                tokens = [t.strip() for t in f.read().splitlines() if t.strip()]
+        except FileNotFoundError:
+            tokens = []
+            console.log("Warning", C["yellow"], False, "tokens.txt not found, no tokens loaded")
+        
         AutoFetchHeaders.fetch()
         self.cached_members = {}
         self._sessions = {}
@@ -630,8 +646,11 @@ class Raider:
         self._proxy_pool = proxies if proxy else []
         self._proxy_index = 0
         self.status_thread_running = False
+        
         if USE_CURL_CFFI:
             console.log("Info", C["cyan"], False, "curl_cffi enabled (TLS fingerprint spoofing)")
+        else:
+            console.log("Info", C["yellow"], False, "curl_cffi not available, using requests (higher risk)")
 
     # ========== プロキシローテーション ==========
     def _get_next_proxy(self):
@@ -1010,7 +1029,6 @@ class Raider:
                 for token in tokens_list:
                     threading.Thread(target=self.guild_spammer, args=(token, guild_id, message, 0, 0, None)).start()
                 runs += 1
-                # 次の実行まで待機（インターバル分）
                 if max_runs == 0 or runs < max_runs:
                     time.sleep(interval_minutes * 60)
         threading.Thread(target=run_loop, daemon=True).start()
@@ -1023,10 +1041,8 @@ class Raider:
             while not SHOULD_STOP:
                 try:
                     status = random.choice(custom_statuses)
-                    # WebSocketでステータスを更新
                     ws = websocket.WebSocket()
                     ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
-                    # 認証とステータス設定
                     for token in tokens:
                         try:
                             ws.send(json.dumps({
@@ -1054,18 +1070,13 @@ class Raider:
 
     # ========== 高度なリアクション（新機能） ==========
     def advanced_reaction(self, channel_id, target_type, target_value, emoji):
-        """
-        target_type: 'user', 'keyword', 'message_id'
-        target_value: user_id, keyword, or message_id
-        """
         try:
             if target_type == "message_id":
-                # 特定メッセージにリアクション
-                self._request("PUT", f"https://discord.com/api/v9/channels/{channel_id}/messages/{target_value}/reactions/{emoji}/@me",
-                              token=None, headers=self.headers_full(token))  # 全トークンで実行
+                for token in tokens:
+                    self._request("PUT", f"https://discord.com/api/v9/channels/{channel_id}/messages/{target_value}/reactions/{emoji}/@me",
+                                  token, headers=self.headers_full(token), timeout=10)
                 console.log("Advanced Reaction", C["green"], False, f"Reacted to message {target_value}")
                 return
-            # チャンネルメッセージを取得
             resp = self._request("GET", f"https://discord.com/api/v9/channels/{channel_id}/messages",
                                  token=tokens[0], headers=self.headers_full(tokens[0]), params={"limit": 50}, timeout=10)
             if resp.status_code != 200:
@@ -1087,7 +1098,6 @@ class Raider:
                 console.log("No matching message found", C["yellow"])
                 return
             msg_id = target_msg["id"]
-            # 全トークンでリアクション
             def react(token):
                 try:
                     self._request("PUT", f"https://discord.com/api/v9/channels/{channel_id}/messages/{msg_id}/reactions/{emoji}/@me",
