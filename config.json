@@ -1,0 +1,18 @@
+{
+    "Proxies": true,
+    "Theme": "light_blue",
+    "DelayMean": 2.5,
+    "DelayStd": 0.8,
+    "MinDelay": 1.0,
+    "MaxDelay": 6.0,
+    "UseTyping": true,
+    "MessageVariation": true,
+    "JoinerRetries": 0,
+    "JoinerDelayMin": 5,
+    "JoinerDelayMax": 15,
+    "GlobalRateLimit": true,
+    "RateLimitPerSecond": 3,
+    "StatusRotation": true,
+    "StatusInterval": 120,
+    "CustomStatuses": ["Playing Games", "Listening to Music", "Watching YouTube"]
+}
