@@ -36,7 +36,6 @@ import websocket
 import orjson
 import concurrent.futures
 import json as json_lib
-import math
 from collections import defaultdict, deque
 
 # ==================== curl_cffi で TLS フィンガープリントを偽装 ====================
@@ -66,7 +65,6 @@ def load_config():
         "MaxDelay": 8.0,
         "UseTyping": True,
         "MessageVariation": True,
-        "JoinerRetries": 0,
         "JoinerDelayMin": 10,
         "JoinerDelayMax": 30,
         "GlobalRateLimit": True,
@@ -174,7 +172,6 @@ class Files:
                     "MaxDelay": 8.0,
                     "UseTyping": True,
                     "MessageVariation": True,
-                    "JoinerRetries": 0,
                     "JoinerDelayMin": 10,
                     "JoinerDelayMax": 30,
                     "GlobalRateLimit": True,
@@ -226,7 +223,6 @@ min_delay = config.get("MinDelay", 1.5)
 max_delay = config.get("MaxDelay", 8.0)
 use_typing = config.get("UseTyping", True)
 message_variation = config.get("MessageVariation", True)
-joiner_retries = config.get("JoinerRetries", 0)
 joiner_delay_min = config.get("JoinerDelayMin", 10)
 joiner_delay_max = config.get("JoinerDelayMax", 30)
 global_rate_limit = config.get("GlobalRateLimit", True)
@@ -252,11 +248,9 @@ class GlobalRateLimiter:
         with self.lock:
             now = time.time()
             bucket = self.buckets[endpoint]
-            # リセット時間をチェック
             if now > bucket["reset"]:
                 bucket["timestamps"].clear()
                 bucket["reset"] = now + 1.0
-            # 1秒あたりの制限をチェック
             if len(bucket["timestamps"]) >= self.per_second:
                 return False
             bucket["timestamps"].append(now)
@@ -269,7 +263,6 @@ class GlobalRateLimiter:
             time.sleep(0.05)
 
     def update_from_response(self, endpoint, response):
-        """429レスポンスからretry_afterを取得して更新"""
         try:
             if response.status_code == 429:
                 data = response.json()
@@ -660,11 +653,9 @@ def scrape(token, guild_id, channel_id):
     return sb.run()
 
 class WebSocketPool:
-    """WebSocket接続をプールして再利用する（ステータス更新・オンライン維持用）"""
     def __init__(self):
         self._connections = {}
         self._lock = threading.Lock()
-        self._heartbeat_threads = {}
     
     def get_connection(self, token):
         with self._lock:
@@ -672,7 +663,6 @@ class WebSocketPool:
                 ws, last_used = self._connections[token]
                 if time.time() - last_used < 60:
                     return ws
-            # 新規接続
             try:
                 ws = websocket.WebSocket()
                 ws.connect("wss://gateway.discord.gg/?v=10&encoding=json")
@@ -733,10 +723,11 @@ class Raider:
         return self._proxy_pool[self._proxy_index]
 
     def _get_impersonate(self):
+        # ★ サポート外を除外 ★
         safe_choices = [
             "chrome110", "chrome120", "chrome124", "chrome136",
-            "edge101", "edge120",
-            "firefox102", "firefox128"
+            "edge101",
+            "firefox101", "firefox100"
         ]
         return random.choice(safe_choices)
 
@@ -831,13 +822,24 @@ class Raider:
         time.sleep(delay)
         return delay
 
+    # ========== 高度なメッセージバリエーション（リンク保護） ==========
     def vary_message(self, base_message):
         if not message_variation:
             return base_message
+        
+        # URLパターンを検出して保護
+        url_pattern = re.compile(r'https?://[^\s]+|discord\.gg/[^\s]+|discord\.com/invite/[^\s]+', re.IGNORECASE)
+        urls = url_pattern.findall(base_message)
+        placeholder = "___URL_PLACEHOLDER___"
+        temp_message = base_message
+        for i, url in enumerate(urls):
+            temp_message = temp_message.replace(url, f"{placeholder}{i}")
+        
         emojis = ["", "✨", "🔥", "💀", "🎯", "🚀", "💥", "⚡", "🌀", "🔰", "💫", "🌟"]
         spacers = ["", " ", "  ", " - ", " | ", " • ", " · ", " ✦ "]
         suffixes = ["", "", "", " (auto)", " 🔥", " 💀", " 🚀"]
-        parts = [base_message]
+        
+        parts = [temp_message]
         if random.random() < 0.5:
             parts.insert(0, random.choice(emojis))
         if random.random() < 0.3:
@@ -845,7 +847,12 @@ class Raider:
         if random.random() < 0.3:
             parts.append(random.choice(suffixes))
         random.shuffle(parts)
-        return "".join(parts).strip()
+        varied = "".join(parts).strip()
+        
+        for i, url in enumerate(urls):
+            varied = varied.replace(f"{placeholder}{i}", url)
+        
+        return varied
 
     def send_typing(self, token, channel_id):
         if not use_typing:
@@ -960,7 +967,9 @@ class Raider:
                 return False
         return False
 
-    def guild_spammer(self, token, guild_id, message, pings, delay, poll=None):
+    # ========== guild_spammer（全オプション対応） ==========
+    def guild_spammer(self, token, guild_id, message, pings=0, delay=0, poll=None,
+                      massping=False, massping_count=0, random_str=False):
         if not self.check_membership(token, guild_id):
             console.log("Skip", C["gray"], f"{token[:15]}...", "not in guild")
             return
@@ -976,7 +985,17 @@ class Raider:
             for ch in active_channels[:]:
                 if SHOULD_STOP:
                     break
-                success = self.send_message(token, ch['id'], message, poll)
+                content = message
+                if pings > 0:
+                    content = ("@everyone " * pings) + content
+                if massping and massping_count > 0:
+                    members = self.get_random_members(guild_id, massping_count)
+                    if members:
+                        content += f" {members}"
+                if random_str:
+                    content += f" | {get_random_str(10)}"
+                
+                success = self.send_message(token, ch['id'], content, poll)
                 if not success:
                     console.log("Removing channel", C["gray"], f"{token[:15]}...", f"Ch {ch['id']} (no permission)")
                     active_channels.remove(ch)
@@ -989,15 +1008,15 @@ class Raider:
             if delay > 0:
                 time.sleep(delay + random.uniform(0, 2))
 
-    def spammer(self, token, channel_id, message, guild=None, massping=None,
-                pings=None, random_str=None, delay=None, poll=None):
+    def spammer(self, token, channel_id, message, guild=None, massping=False,
+                pings=None, random_str=False, delay=None, poll=None):
         if massping and guild:
             if not self.check_membership(token, guild):
                 console.log("Skip", C["gray"], f"{token[:15]}...", "not in guild for massping")
                 return
         while not SHOULD_STOP:
             content = message
-            if massping:
+            if massping and pings:
                 members = self.get_random_members(guild, pings)
                 if members:
                     content += f" {members}"
@@ -1013,7 +1032,6 @@ class Raider:
                 self.human_delay()
 
     def get_random_members(self, guild_id, count):
-        # キャッシュの有効期限チェック
         now = time.time()
         if guild_id in self.cache_timestamps:
             if now - self.cache_timestamps[guild_id] > cache_ttl:
@@ -1035,7 +1053,6 @@ class Raider:
         members = self.cached_members.get(guild_id, [])
         if not members:
             return ""
-        # 上限を超えないように調整
         actual_count = min(count, len(members))
         selected = random.sample(members, actual_count)
         return " ".join(f"<@!{uid}>" for uid in selected)
@@ -1068,7 +1085,9 @@ class Raider:
         except Exception as e:
             console.log("Failed", C["red"], False, f"member_scrape: {e}")
 
-    def schedule_spam(self, guild_id, channel_id, message, schedule_time, tokens_list):
+    # ========== スケジュールスパム（メッセージ保存対応＋全オプション） ==========
+    def schedule_spam(self, guild_id, channel_id, message, schedule_time, tokens_list,
+                      pings=0, delay=0, massping=False, massping_count=0, random_str=False, poll=None):
         try:
             now = datetime.now()
             target = datetime.strptime(schedule_time, "%H:%M").replace(year=now.year, month=now.month, day=now.day)
@@ -1079,11 +1098,12 @@ class Raider:
             time.sleep(wait_seconds)
             console.log("Schedule", C["green"], False, "Starting scheduled spam!")
             for token in tokens_list:
-                threading.Thread(target=self.guild_spammer, args=(token, guild_id, message, 0, 0, None), daemon=True).start()
+                threading.Thread(target=self.guild_spammer, args=(token, guild_id, message, pings, delay, poll, massping, massping_count, random_str), daemon=True).start()
         except Exception as e:
             console.log("Schedule Error", C["red"], False, str(e))
 
-    def repeat_schedule_spam(self, guild_id, channel_id, message, schedule_time, interval_minutes, tokens_list, max_runs=0):
+    def repeat_schedule_spam(self, guild_id, channel_id, message, schedule_time, interval_minutes, tokens_list,
+                             pings=0, delay=0, massping=False, massping_count=0, random_str=False, poll=None, max_runs=0):
         def run_loop():
             runs = 0
             while not SHOULD_STOP and (max_runs == 0 or runs < max_runs):
@@ -1097,7 +1117,7 @@ class Raider:
                     time.sleep(wait_seconds)
                     console.log("Repeat Schedule", C["green"], False, f"Starting scheduled spam (run {runs+1})")
                     for token in tokens_list:
-                        threading.Thread(target=self.guild_spammer, args=(token, guild_id, message, 0, 0, None), daemon=True).start()
+                        threading.Thread(target=self.guild_spammer, args=(token, guild_id, message, pings, delay, poll, massping, massping_count, random_str), daemon=True).start()
                     runs += 1
                     if max_runs == 0 or runs < max_runs:
                         time.sleep(interval_minutes * 60)
@@ -1152,7 +1172,6 @@ class Raider:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(tokens))) as executor:
                     executor.map(react_to_message, tokens)
                 return
-            # メッセージ取得
             resp = self._request("GET", f"{API_BASE}/channels/{channel_id}/messages",
                                  token=tokens[0], headers=self.headers_full(tokens[0]), params={"limit": 50}, timeout=10)
             if resp.status_code != 200:
@@ -1187,11 +1206,11 @@ class Raider:
             console.log("Advanced Reaction Error", C["red"], False, str(e))
 
     def clear_cache(self):
-        """キャッシュをクリア（新機能 36）"""
         self.cached_members.clear()
         self.cache_timestamps.clear()
         console.log("Cache Cleared", C["green"], False, "All cached data has been cleared")
 
+    # ========== Joiner（キャプチャ即諦め・リトライなし） ==========
     def joiner(self, invite):
         try:
             params = {
@@ -1231,36 +1250,34 @@ class Raider:
             context = base64.b64encode(json.dumps(join).encode()).decode()
 
             def join_server(token):
-                max_retries = joiner_retries
-                for attempt in range(max_retries + 1):
-                    try:
-                        self.human_delay()
-                        headers = self.headers_full(token)
-                        headers["X-Context-Properties"] = context
-                        payload = {"session_id": uuid.uuid4().hex}
-                        resp = self._request("POST", f"{API_BASE}/invites/{invite}",
-                                             token, headers=headers, json=payload, timeout=10)
-                        if resp.status_code == 200:
-                            console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
-                            return
-                        elif resp.status_code == 400:
-                            console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Captcha detected - skipping this token")
-                            return
-                        elif resp.status_code == 429:
-                            wait = resp.json().get('retry_after', 30) + random.uniform(0, 10)
-                            console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Rate limited, waiting {wait:.1f}s")
-                            time.sleep(wait)
-                            if attempt < max_retries:
-                                continue
+                try:
+                    self.human_delay()
+                    headers = self.headers_full(token)
+                    headers["X-Context-Properties"] = context
+                    payload = {"session_id": uuid.uuid4().hex}
+                    resp = self._request("POST", f"{API_BASE}/invites/{invite}",
+                                         token, headers=headers, json=payload, timeout=10)
+                    if resp.status_code == 200:
+                        console.log("Joined", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
+                    elif resp.status_code == 400:
+                        # ★ キャプチャ → 即座に諦める（リトライしない） ★
+                        console.log("Captcha", C["yellow"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Captcha detected - skipping this token")
+                    elif resp.status_code == 429:
+                        wait = resp.json().get('retry_after', 30) + random.uniform(0, 10)
+                        console.log("Cloudflare", C["magenta"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", f"Rate limited, waiting {wait:.1f}s")
+                        time.sleep(wait)
+                        # ★ レート制限なら1回だけ再試行（キャプチャとは異なる） ★
+                        if resp.status_code == 429:
+                            retry_resp = self._request("POST", f"{API_BASE}/invites/{invite}",
+                                                       token, headers=headers, json=payload, timeout=10)
+                            if retry_resp.status_code == 200:
+                                console.log("Joined (retry)", C["green"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", guild_name)
                             else:
-                                return
-                        else:
-                            console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message", "Unknown error"))
-                            return
-                    except Exception as e:
-                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
-                        return
-                console.log("Skipped", C["gray"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", "Max retries reached")
+                                console.log("Failed (retry)", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", retry_resp.json().get("message", "Unknown error"))
+                    else:
+                        console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", resp.json().get("message", "Unknown error"))
+                except Exception as e:
+                    console.log("Failed", C["red"], f"{Fore.RESET}{token[:25]}.{Fore.LIGHTCYAN_EX}**", e)
             args = [(token,) for token in tokens]
             Menu().run(join_server, args)
         except Exception as e:
@@ -1268,6 +1285,7 @@ class Raider:
             input()
             Menu().main_menu()
 
+    # ========== 以下、他の機能（変更なし） ==========
     def leaver(self, token, guild):
         try:
             def get_guild_name(guild):
@@ -2235,12 +2253,20 @@ class Menu:
             poll_data = None
             if add_poll.lower().startswith('y'):
                 poll_data = {
-                    "question": "Raid by Masumani",
-                    "options": ["join", "now", "discord.gg/", "msmn"]
+                    "question": input(console.prompt("質問 (デフォルト: Raid by Masumani)")) or "Raid by Masumani",
+                    "options": input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)")).split(",") or ["join", "now", "discord.gg/", "msmn"]
                 }
-                console.log("Poll", C["green"], False, "質問: 'Raid by Masumani', 選択肢: join, now, discord.gg/, msmn")
+                poll_data["options"] = [opt.strip() for opt in poll_data["options"] if opt.strip()]
+                console.log("Poll", C["green"], False, f"質問: '{poll_data['question']}', 選択肢: {', '.join(poll_data['options'])}")
             pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
             delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 0〜5)")) or "0")
+            massping = input(console.prompt("ランダムメンションを有効にしますか？ (y/n)"))
+            massping_count = 0
+            if massping.lower().startswith('y'):
+                massping_count = int(input(console.prompt("メンション数")) or "1")
+            random_str = input(console.prompt("ランダム文字列を追加しますか？ (y/n)"))
+            random_str_flag = random_str.lower().startswith('y')
+            
             valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
             if not valid_tokens:
                 console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
@@ -2249,7 +2275,7 @@ class Menu:
             console.log("Info", C["green"], False, f"{len(valid_tokens)}/{len(tokens)} 個のトークンが参加しています。")
             console.clear()
             console.render_ascii()
-            args = [(token, guild_id, message, pings, delay, poll_data) for token in valid_tokens]
+            args = [(token, guild_id, message, pings, delay, poll_data, massping.lower().startswith('y'), massping_count, random_str_flag) for token in valid_tokens]
             self.run_spammer(self.raider.guild_spammer, args)
         else:
             link = input(console.prompt("Channel LINK"))
@@ -2264,7 +2290,7 @@ class Menu:
             if delay_input != "":
                 delay = float(delay_input)
             ping_count = None
-            if "y" in massping:
+            if massping.lower().startswith('y'):
                 console.log("Scraping users", self.background, False, "this may take a while...")
                 self.raider.member_scrape(guild_id, channel_id)
                 count_str = input(console.prompt("Pings Amount"))
@@ -2275,10 +2301,11 @@ class Menu:
             poll_data = None
             if add_poll.lower().startswith('y'):
                 poll_data = {
-                    "question": "Raid by Masumani",
-                    "options": ["join", "now", "discord.gg/", "msmn"]
+                    "question": input(console.prompt("質問 (デフォルト: Raid by Masumani)")) or "Raid by Masumani",
+                    "options": input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)")).split(",") or ["join", "now", "discord.gg/", "msmn"]
                 }
-                console.log("Poll", C["green"], False, "質問: 'Raid by Masumani', 選択肢: join, now, discord.gg/, msmn")
+                poll_data["options"] = [opt.strip() for opt in poll_data["options"] if opt.strip()]
+                console.log("Poll", C["green"], False, f"質問: '{poll_data['question']}', 選択肢: {', '.join(poll_data['options'])}")
             valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
             if not valid_tokens:
                 console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
@@ -2286,7 +2313,7 @@ class Menu:
                 self.main_menu()
             console.log("Info", C["green"], False, f"{len(valid_tokens)}/{len(tokens)} 個のトークンが参加しています。")
             args = [
-                (token, channel_id, message, guild_id, "y" in massping, ping_count, "y" in random_str, delay, poll_data)
+                (token, channel_id, message, guild_id, massping.lower().startswith('y'), ping_count, random_str.lower().startswith('y'), delay, poll_data)
                 for token in valid_tokens
             ]
             self.run_spammer(self.raider.spammer, args)
@@ -2294,77 +2321,9 @@ class Menu:
     @wrapper
     def poll_spammer(self):
         console.title("Masumani - Poll Spammer")
-        console.log("Info", C["yellow"], False, "事前に [04] Token Checker を推奨します。")
-        use_guild = input(console.prompt("Use Guild ID for all channels? (y/n)"))
-        if use_guild.lower().startswith('y'):
-            guild_id = input(console.prompt("Guild ID"))
-            if not guild_id:
-                self.main_menu()
-            console.log("Fetching channel list...", C["yellow"])
-            for token in tokens:
-                try:
-                    resp = self.raider._request("GET", f"{API_BASE}/guilds/{guild_id}/channels",
-                                                token, headers=self.raider.headers_full(token), timeout=10)
-                    if resp.status_code == 200:
-                        channels = resp.json()
-                        text_channels = [c for c in channels if c.get('type') == 0]
-                        console.log("Found", C["green"], False, f"{len(text_channels)} text channels")
-                        for ch in text_channels[:10]:
-                            console.log("Channel", C["cyan"], False, f"{ch['id']} - #{ch.get('name', 'No name')}")
-                        if len(text_channels) > 10:
-                            console.log("Info", C["gray"], False, f"... and {len(text_channels)-10} more")
-                        break
-                except:
-                    pass
-            question = input(console.prompt("質問 (デフォルト: Raid by Masumani)"))
-            if question == "":
-                question = "Raid by Masumani"
-            options_input = input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)"))
-            if options_input == "":
-                options = ["join", "now", "discord.gg/", "msmn"]
-            else:
-                options = [opt.strip() for opt in options_input.split(",") if opt.strip()]
-            poll_data = {
-                "question": question,
-                "options": options
-            }
-            pings = 0
-            delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 3〜5)")) or "3")
-            message = ""
-            valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
-            if not valid_tokens:
-                console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
-                input("Press Enter to continue...")
-                self.main_menu()
-            console.clear()
-            console.render_ascii()
-            args = [(token, guild_id, message, pings, delay, poll_data) for token in valid_tokens]
-            self.run_spammer(self.raider.guild_spammer, args)
-        else:
-            link = input(console.prompt("Channel LINK"))
-            if link == "" or not link.startswith("https://"):
-                self.main_menu()
-            channel_id = link.split("/")[5]
-            question = input(console.prompt("質問 (デフォルト: Raid by Masumani)"))
-            if question == "":
-                question = "Raid by Masumani"
-            options_input = input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)"))
-            if options_input == "":
-                options = ["join", "now", "discord.gg/", "msmn"]
-            else:
-                options = [opt.strip() for opt in options_input.split(",") if opt.strip()]
-            poll_data = {
-                "question": question,
-                "options": options
-            }
-            guild_id = link.split("/")[4]
-            valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
-            if not valid_tokens:
-                console.log("Failed", C["red"], "対象サーバーに参加しているトークンがありません。")
-                input("Press Enter to continue...")
-                self.main_menu()
-            args = [(token, channel_id, "", None, False, None, False, None, poll_data) for token in valid_tokens]
-            self.run_spammer(self.raider.spammer, args)
+        console.log("Info", C["yellow"], False, "投票スパムは [03] Spammer で投票オプションを有効にしてください。")
+        input("Press Enter to return...")
+        self.main_menu()
 
     @wrapper
     def schedule_spam(self):
@@ -2375,20 +2334,39 @@ class Menu:
         channel_id = input(console.prompt("Channel ID (or leave empty for all channels)"))
         if channel_id == "":
             channel_id = None
-        message = input(console.prompt("Message"))
-        if not message:
+        # ★ メッセージ保存機能を利用 ★
+        message = self.get_message_from_file_or_input()
+        if message is None:
             self.main_menu()
         schedule_time = input(console.prompt("Schedule time (HH:MM)"))
         if not re.match(r"^\d{2}:\d{2}$", schedule_time):
             console.log("Invalid time format", C["red"])
             input("Press Enter...")
             self.main_menu()
+        # 追加オプション（通常スパムと同じ）
+        pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
+        delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 0〜5)")) or "0")
+        massping = input(console.prompt("ランダムメンションを有効にしますか？ (y/n)"))
+        massping_count = 0
+        if massping.lower().startswith('y'):
+            massping_count = int(input(console.prompt("メンション数")) or "1")
+        random_str = input(console.prompt("ランダム文字列を追加しますか？ (y/n)"))
+        random_str_flag = random_str.lower().startswith('y')
+        add_poll = input(console.prompt("投票を追加しますか？ (y/n)"))
+        poll_data = None
+        if add_poll.lower().startswith('y'):
+            poll_data = {
+                "question": input(console.prompt("質問 (デフォルト: Raid by Masumani)")) or "Raid by Masumani",
+                "options": input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)")).split(",") or ["join", "now", "discord.gg/", "msmn"]
+            }
+            poll_data["options"] = [opt.strip() for opt in poll_data["options"] if opt.strip()]
+            console.log("Poll", C["green"], False, f"質問: '{poll_data['question']}', 選択肢: {', '.join(poll_data['options'])}")
         valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
         if not valid_tokens:
             console.log("Failed", C["red"], "No valid tokens in guild")
             input("Press Enter...")
             self.main_menu()
-        threading.Thread(target=self.raider.schedule_spam, args=(guild_id, channel_id, message, schedule_time, valid_tokens), daemon=True).start()
+        threading.Thread(target=self.raider.schedule_spam, args=(guild_id, channel_id, message, schedule_time, valid_tokens, pings, delay, massping.lower().startswith('y'), massping_count, random_str_flag, poll_data), daemon=True).start()
         console.log("Schedule set", C["green"], False, f"Spam will start at {schedule_time}")
         input("Press Enter to continue...")
         self.main_menu()
@@ -2402,8 +2380,8 @@ class Menu:
         channel_id = input(console.prompt("Channel ID (or leave empty for all channels)"))
         if channel_id == "":
             channel_id = None
-        message = input(console.prompt("Message"))
-        if not message:
+        message = self.get_message_from_file_or_input()
+        if message is None:
             self.main_menu()
         schedule_time = input(console.prompt("Schedule time (HH:MM)"))
         if not re.match(r"^\d{2}:\d{2}$", schedule_time):
@@ -2412,12 +2390,29 @@ class Menu:
             self.main_menu()
         interval = int(input(console.prompt("Interval between runs (minutes)")) or "60")
         max_runs = int(input(console.prompt("Max runs (0 for infinite)")) or "0")
+        pings = int(input(console.prompt("Pings amount (0推奨)")) or "0")
+        delay = float(input(console.prompt("Delay between cycles (秒, 推奨: 0〜5)")) or "0")
+        massping = input(console.prompt("ランダムメンションを有効にしますか？ (y/n)"))
+        massping_count = 0
+        if massping.lower().startswith('y'):
+            massping_count = int(input(console.prompt("メンション数")) or "1")
+        random_str = input(console.prompt("ランダム文字列を追加しますか？ (y/n)"))
+        random_str_flag = random_str.lower().startswith('y')
+        add_poll = input(console.prompt("投票を追加しますか？ (y/n)"))
+        poll_data = None
+        if add_poll.lower().startswith('y'):
+            poll_data = {
+                "question": input(console.prompt("質問 (デフォルト: Raid by Masumani)")) or "Raid by Masumani",
+                "options": input(console.prompt("選択肢 (カンマ区切り, デフォルト: join,now,discord.gg/,msmn)")).split(",") or ["join", "now", "discord.gg/", "msmn"]
+            }
+            poll_data["options"] = [opt.strip() for opt in poll_data["options"] if opt.strip()]
+            console.log("Poll", C["green"], False, f"質問: '{poll_data['question']}', 選択肢: {', '.join(poll_data['options'])}")
         valid_tokens = self.raider.get_valid_tokens_for_guild(guild_id)
         if not valid_tokens:
             console.log("Failed", C["red"], "No valid tokens in guild")
             input("Press Enter...")
             self.main_menu()
-        self.raider.repeat_schedule_spam(guild_id, channel_id, message, schedule_time, interval, valid_tokens, max_runs)
+        self.raider.repeat_schedule_spam(guild_id, channel_id, message, schedule_time, interval, valid_tokens, pings, delay, massping.lower().startswith('y'), massping_count, random_str_flag, poll_data, max_runs)
         console.log("Repeat schedule started", C["green"])
         input("Press Enter to continue...")
         self.main_menu()
@@ -2747,9 +2742,9 @@ class Menu:
   ~ でクレジットを表示します。
 
 {C['yellow']}機能一覧:{C['white']}
-  {C['light_blue']}01{C['white']} Joiner          : サーバー参加（キャプチャ対策強化）
+  {C['light_blue']}01{C['white']} Joiner          : サーバー参加（キャプチャ即諦め・リトライなし）
   {C['light_blue']}02{C['white']} Leaver          : サーバー退出
-  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（永久ループ・投票対応）
+  {C['light_blue']}03{C['white']} Spammer         : メッセージスパム（投票・ランダムメンション・ランダム文字列・全チャンネル対応）
   {C['light_blue']}04{C['white']} Token Checker   : トークン有効性チェック
   {C['light_blue']}05{C['white']} Emoji Reaction  : リアクション
   {C['light_blue']}06{C['white']} Clear Status    : ステータス消去
@@ -2768,10 +2763,10 @@ class Menu:
   {C['light_blue']}21{C['white']} Voice Joiner    : ボイス参加
   {C['light_blue']}22{C['white']} Onboard Bypass  : オンボーディング回避
   {C['light_blue']}23{C['white']} DM Spammer      : DMスパム
-  {C['light_blue']}25{C['white']} Poll Spammer    : 投票スパム
+  {C['light_blue']}25{C['white']} Poll Spammer    : 投票スパム（[03] に統合）
   {C['light_blue']}26{C['white']} Mass Timeout    : 一斉タイムアウト
   {C['light_blue']}27{C['white']} Mass Nick All   : 一斉ニック変更
-  {C['light_blue']}28{C['white']} Schedule Spam   : 予約スパム
+  {C['light_blue']}28{C['white']} Schedule Spam   : 予約スパム（メッセージ保存対応・全オプション）
   {C['light_blue']}32{C['white']} Token Quality   : トークン品質レポート
   {C['light_blue']}33{C['white']} Status Manager  : ステータス自動切替
   {C['light_blue']}34{C['white']} Adv Reaction    : 高度なリアクション
@@ -2783,6 +2778,8 @@ class Menu:
   2. 遅延は config.json で調整
   3. @everyone は極力避ける
   4. 古いアカウントほど制限が緩い
+  5. ランダムメンションと投票は同時に利用可能
+  6. スケジュールでもメッセージ保存機能が使えます
 
 {C['red']}注意:{C['white']}
   自己ボット（ユーザートークン）を使用。利用規約に違反します。
@@ -2801,7 +2798,6 @@ class Menu:
 
 if __name__ == "__main__":
     Menu().main_menu()
-    # 終了時にWebSocketプールをクリーンアップ
     try:
         ws_pool.close_all()
     except:
