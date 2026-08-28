@@ -1,5 +1,5 @@
 # Copyright (c) 2024-2026 Masumani Inc.
-# 完全版 – 全機能維持＋徹底強化（安定性・回避性・並列性を極限まで向上）
+# 完全版 – ボイス自動切断防止＋スパマー全バグ修正＋全機能維持
 # このファイル全体で既存の masumani.py を完全置換してください。
 
 import getpass
@@ -126,7 +126,6 @@ def wrapper(func):
     return wrapper
 
 def retry_api(func):
-    """API呼び出し用リトライデコレータ（接続エラー・429自動回復）"""
     def wrapper(self, *args, **kwargs):
         last_exception = None
         for attempt in range(max_retries):
@@ -319,7 +318,7 @@ class AutoFetchHeaders:
         except Exception as e:
             console.log("Failed", C["red"], False, f"Header fetch: {e}")
 
-# ---------- グローバルレートリミッター（拡張） ----------
+# ---------- グローバルレートリミッター ----------
 class GlobalRateLimiter:
     def __init__(self):
         self.buckets = defaultdict(lambda: {"timestamps": deque(maxlen=100), "reset": 0, "retry_after": 0})
@@ -357,12 +356,11 @@ class GlobalRateLimiter:
 
 global_rate_limiter = GlobalRateLimiter()
 
-# ---------- WebSocketPool 完全強化版 ----------
+# ---------- WebSocketPool 完全強化 ----------
 class WebSocketPool:
     def __init__(self):
         self._connections = {}
         self._lock = threading.Lock()
-        self._heartbeat_threads = {}
 
     def _is_ws_alive(self, ws):
         try:
@@ -409,7 +407,7 @@ class WebSocketPool:
 
 ws_pool = WebSocketPool()
 
-# ---------- ユーティリティ関数 ----------
+# ---------- ユーティリティ ----------
 class Utils:
     @staticmethod
     def get_ranges(index, multiplier):
@@ -556,7 +554,108 @@ class DiscordSocket(websocket.WebSocketApp):
         else:
             console.log("Info", C["yellow"], False, f"Socket closed, scraped {len(self.members)} members")
 
-# ---------- Raider クラス（全機能・全強化統合） ----------
+# ---------- VoiceConnection クラス（ボイス維持専用） ----------
+class VoiceConnection:
+    def __init__(self, token, guild_id, channel_id):
+        self.token = token
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.ws = None
+        self.running = False
+        self.thread = None
+        self.heartbeat_interval = 30
+        self.last_heartbeat = 0
+        self.voice_server_id = None
+        self.session_id = None
+
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.ws:
+            try:
+                self.ws.close()
+            except:
+                pass
+
+    def _run(self):
+        while self.running:
+            try:
+                self._connect_and_loop()
+            except Exception as e:
+                console.log("Voice Error", C["red"], f"{self.token[:15]}...", str(e))
+                time.sleep(5)
+
+    def _connect_and_loop(self):
+        self.ws = websocket.WebSocket()
+        self.ws.connect("wss://gateway.discord.gg/?v=10&encoding=json")
+        self.ws.send(json.dumps({
+            "op": 2,
+            "d": {
+                "token": self.token,
+                "properties": {"os": "Windows", "browser": "Discord", "device": "desktop"},
+                "presence": {"status": "online", "since": 0, "activities": [], "afk": False}
+            }
+        }))
+        self.ws.send(json.dumps({
+            "op": 4,
+            "d": {
+                "guild_id": self.guild_id,
+                "channel_id": self.channel_id,
+                "self_mute": False,
+                "self_deaf": False,
+                "self_stream": False,
+                "self_video": True
+            }
+        }))
+        self.last_heartbeat = time.time()
+        while self.running:
+            try:
+                self.ws.settimeout(5)
+                try:
+                    msg = self.ws.recv()
+                    if msg:
+                        data = json.loads(msg)
+                        op = data.get("op")
+                        if op == 10:
+                            interval = data["d"]["heartbeat_interval"] / 1000
+                            self.heartbeat_interval = interval
+                        elif op == 11:
+                            pass
+                        elif op == 0 and data.get("t") == "VOICE_SERVER_UPDATE":
+                            self.voice_server_id = data["d"]["guild_id"]
+                            self.session_id = data["d"].get("session_id")
+                except websocket.WebSocketTimeoutException:
+                    pass
+                if time.time() - self.last_heartbeat > self.heartbeat_interval:
+                    self.ws.send(json.dumps({"op": 1, "d": None}))
+                    self.last_heartbeat = time.time()
+                if time.time() - self.last_heartbeat > 15:
+                    self.ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": self.guild_id,
+                            "channel_id": self.channel_id,
+                            "self_mute": False,
+                            "self_deaf": False,
+                            "self_stream": False,
+                            "self_video": True
+                        }
+                    }))
+            except Exception as e:
+                console.log("Voice Loop Error", C["red"], f"{self.token[:15]}...", str(e))
+                break
+        try:
+            self.ws.close()
+        except:
+            pass
+
+# ---------- Raider クラス ----------
 class Raider:
     def __init__(self):
         self._load_tokens_proxies()
@@ -569,6 +668,7 @@ class Raider:
         self._proxy_index = 0
         self.status_thread_running = False
         self._impersonate_list = ["chrome110", "chrome120", "chrome124", "chrome136", "edge101", "firefox101", "firefox100"]
+        self._voice_connections = {}  # ボイス接続管理
         if USE_CURL_CFFI:
             console.log("Info", C["cyan"], False, "curl_cffi enabled (TLS fingerprint spoofing)")
         else:
@@ -768,41 +868,57 @@ class Raider:
             console.log("Failed", C["red"], f"{token[:15]}...", f"Ch {channel_id} ({resp.status_code})")
             return False
 
-    # ---------- guild_spammer 完全再実装 ----------
+    # ---------- guild_spammer 完全安定版 ----------
     def guild_spammer(self, token, guild_id, message, pings=0, delay=0, poll=None,
                       massping=False, massping_count=0, random_str=False):
         if not self.check_membership(token, guild_id):
             console.log("Skip", C["gray"], f"{token[:15]}...", "not in guild")
             return
-        channels = self.get_text_channels(token, guild_id)
+        channels = self.get_text_channels(token, guild_id, cache_seconds=0)
         if not channels:
             console.log("Info", C["yellow"], f"{token[:15]}...", "no text channels")
             return
         console.log("Started", C["green"], f"{token[:15]}...", f"{len(channels)} channels")
         active_channels = channels.copy()
         retry_count = 0
+        last_refresh = time.time()
+        refresh_interval = 120
 
         while not SHOULD_STOP.is_set():
             try:
+                if time.time() - last_refresh > refresh_interval:
+                    new_channels = self.get_text_channels(token, guild_id, cache_seconds=0)
+                    if new_channels:
+                        existing_ids = {c['id'] for c in active_channels}
+                        for ch in new_channels:
+                            if ch['id'] not in existing_ids:
+                                active_channels.append(ch)
+                        console.log("Channels refreshed", C["cyan"], f"{token[:15]}...", f"{len(active_channels)} channels")
+                    last_refresh = time.time()
+
                 random.shuffle(active_channels)
                 for ch in active_channels[:]:
                     if SHOULD_STOP.is_set(): break
                     content = message
-                    if pings > 0: content = ("@everyone " * pings) + content
+                    if pings > 0:
+                        content = ("@everyone " * pings) + content
                     if massping and massping_count > 0:
                         members = self.get_random_members(guild_id, massping_count)
-                        if members: content += f" {members}"
-                    if random_str: content += f" | {get_random_str(10)}"
+                        if members:
+                            content += f" {members}"
+                    if random_str:
+                        content += f" | {get_random_str(10)}"
                     success = self.send_message(token, ch['id'], content, poll)
                     if not success:
-                        active_channels.remove(ch)
+                        if ch in active_channels:
+                            active_channels.remove(ch)
                         continue
                     retry_count = 0
                     self.human_delay()
                 if not active_channels:
-                    console.log("Refreshing channels", C["yellow"], f"{token[:15]}...", "re-fetching")
+                    console.log("Refreshing channels (empty)", C["yellow"], f"{token[:15]}...", "re-fetching")
                     time.sleep(2)
-                    new_channels = self.get_text_channels(token, guild_id)
+                    new_channels = self.get_text_channels(token, guild_id, cache_seconds=0)
                     if new_channels:
                         active_channels = new_channels.copy()
                         console.log("Channels refreshed", C["green"], f"{token[:15]}...", f"{len(active_channels)} channels")
@@ -814,36 +930,65 @@ class Raider:
                     time.sleep(delay + random.uniform(0, 2))
             except requests.exceptions.ConnectionError:
                 retry_count += 1
-                wait = min(30, retry_count * 5)
-                console.log("Network Error", C["red"], f"{token[:15]}...", f"wait {wait}s ({retry_count})")
+                wait = min(60, retry_count * 5 + random.uniform(0, 2))
+                console.log("Network Error", C["red"], f"{token[:15]}...", f"{wait:.1f}s wait ({retry_count})")
                 time.sleep(wait)
-                if retry_count > 5: return
+                if retry_count > 5:
+                    console.log("Giving up", C["red"], f"{token[:15]}...", "too many errors")
+                    return
             except Exception as e:
-                console.log("Error", C["red"], f"{token[:15]}...", str(e))
+                console.log("Unexpected Error", C["red"], f"{token[:15]}...", str(e))
                 time.sleep(5)
                 try:
-                    channels = self.get_text_channels(token, guild_id)
-                    if channels: active_channels = channels.copy()
-                    else: return
-                except: return
+                    new_channels = self.get_text_channels(token, guild_id, cache_seconds=0)
+                    if new_channels:
+                        active_channels = new_channels.copy()
+                    else:
+                        return
+                except:
+                    return
 
-    # ---------- spammer 単一チャンネル ----------
-    def spammer(self, token, channel_id, message, guild=None, massping=False, pings=None, random_str=False, delay=None, poll=None):
+    # ---------- spammer 単一チャンネル安定版 ----------
+    def spammer(self, token, channel_id, message, guild=None, massping=False, pings=None,
+                random_str=False, delay=None, poll=None):
         if massping and guild and not self.check_membership(token, guild):
             console.log("Skip", C["gray"], f"{token[:15]}...", "not in guild for massping")
             return
+        last_refresh = time.time()
+        refresh_interval = 90
+
         while not SHOULD_STOP.is_set():
-            content = message
-            if massping and pings:
-                members = self.get_random_members(guild, pings)
-                if members: content += f" {members}"
-            if random_str: content += f" | {get_random_str(10)}"
-            success = self.send_message(token, channel_id, content, poll)
-            if not success:
-                console.log("Stopped", C["yellow"], f"{token[:15]}...", "no permission")
-                return
-            if delay: time.sleep(delay + random.uniform(0, 1))
-            else: self.human_delay()
+            try:
+                if time.time() - last_refresh > refresh_interval:
+                    try:
+                        self._request("GET", f"{API_BASE}/channels/{channel_id}",
+                                      token, headers=self.headers_minimal(token), timeout=5)
+                    except:
+                        console.log("Channel gone", C["red"], f"{token[:15]}...", "channel deleted")
+                        return
+                    last_refresh = time.time()
+
+                content = message
+                if massping and pings:
+                    members = self.get_random_members(guild, pings)
+                    if members:
+                        content += f" {members}"
+                if random_str:
+                    content += f" | {get_random_str(10)}"
+                success = self.send_message(token, channel_id, content, poll)
+                if not success:
+                    console.log("Stopped", C["yellow"], f"{token[:15]}...", "no permission")
+                    return
+                if delay:
+                    time.sleep(delay + random.uniform(0, 1))
+                else:
+                    self.human_delay()
+            except requests.exceptions.ConnectionError:
+                console.log("Connection lost", C["red"], f"{token[:15]}...", "retry in 5s")
+                time.sleep(5)
+            except Exception as e:
+                console.log("Spammer Error", C["red"], f"{token[:15]}...", str(e))
+                time.sleep(3)
 
     # ---------- メンバーキャッシュ ----------
     def get_random_members(self, guild_id, count):
@@ -865,7 +1010,7 @@ class Raider:
         selected = random.sample(members, min(count, len(members)))
         return " ".join(f"<@!{uid}>" for uid in selected)
 
-    # ---------- メンバースクレイプ（並列化） ----------
+    # ---------- メンバースクレイプ ----------
     def member_scrape(self, guild_id, channel_id):
         try:
             if not channel_id:
@@ -1001,7 +1146,7 @@ class Raider:
         if hasattr(self, '_channel_cache'): self._channel_cache.clear()
         console.log("Cache Cleared", C["green"])
 
-    # ---------- Joiner（キャプチャ即スキップ） ----------
+    # ---------- Joiner ----------
     def joiner(self, invite):
         try:
             params = {"inputValue": f"https://discord.gg/{invite}", "with_counts": "true", "with_expiration": "true", "with_permissions": "true"}
@@ -1058,7 +1203,7 @@ class Raider:
                 console.log("Failed", C["red"], f"{token[:25]}...", resp.json().get("message"))
         except: pass
 
-    # ---------- keep_online 恒久ループ ----------
+    # ---------- keep_online ----------
     def keep_online(self, token):
         while not SHOULD_STOP.is_set():
             try:
@@ -1085,7 +1230,22 @@ class Raider:
             except Exception as e:
                 console.log("Fatal", C["red"], f"{token[:15]}...", str(e)); time.sleep(10)
 
-    # ---------- Voice Spammer ----------
+    # ---------- Voice 関連（完全ボイス維持） ----------
+    def join_voice_channel(self, token, guild_id, channel_id):
+        if token in self._voice_connections:
+            self._voice_connections[token].stop()
+            del self._voice_connections[token]
+        vc = VoiceConnection(token, guild_id, channel_id)
+        vc.start()
+        self._voice_connections[token] = vc
+        console.log("Voice Joined", C["green"], f"{token[:15]}...", f"channel {channel_id}")
+
+    def leave_voice_channel(self, token):
+        if token in self._voice_connections:
+            self._voice_connections[token].stop()
+            del self._voice_connections[token]
+            console.log("Voice Left", C["yellow"], f"{token[:15]}...", "exited")
+
     def voice_spammer(self, token, ws, guild_id, channel_id, close=None):
         try:
             self.onliner_legacy(token, ws)
@@ -1157,26 +1317,6 @@ class Raider:
             console.log("Onlined", C[color], f"{token[:25]}...")
         except Exception as e:
             console.log("Failed", C["red"], f"{token[:25]}...", e)
-
-    def join_voice_channel(self, token, guild_id, channel_id):
-        ws = websocket.WebSocket()
-        def check_for_guild(token):
-            try:
-                resp = self._request("GET", f"{API_BASE}/guilds/{guild_id}", token, headers=self.headers_full(token), timeout=10)
-                return resp.status_code == 200
-            except: return False
-        def check_for_channel(token):
-            if check_for_guild(token):
-                try:
-                    resp = self._request("GET", f"{API_BASE}/channels/{channel_id}", token, headers=self.headers_full(token), timeout=10)
-                    return resp.status_code == 200
-                except: pass
-            return False
-        if check_for_channel(token):
-            console.log("Joined", C["green"], f"{token[:25]}...")
-            self.vc_joiner(token, guild_id, channel_id, ws)
-        else:
-            console.log("Failed", C["red"], f"{token[:25]}...")
 
     def soundbord(self, token, channel):
         try:
@@ -1747,7 +1887,12 @@ class Raider:
         input(f"\n   {console.background}~/> press enter to continue ")
         Menu().main_menu()
 
-# ---------- Menu クラス（完全実装） ----------
+    # ---------- クリーンアップ用 ----------
+    def cleanup_voice(self):
+        for token in list(self._voice_connections.keys()):
+            self.leave_voice_channel(token)
+
+# ---------- Menu クラス ----------
 class Menu:
     def __init__(self):
         global global_raider
@@ -2287,7 +2432,7 @@ class Menu:
         console.clear(); console.render_ascii()
         help_text = f"""
 {C['cyan']}【 Masumani Ultimate ヘルプ 】{C['white']}
-全34機能 + 自動再接続・分散プロキシ・高度回避
+全34機能 + ボイス自動維持 + スパマー安定化
 endコマンドでスパム停止
 設定: config.json で遅延・リトライ・プロキシローテーション調整
 """
@@ -2298,6 +2443,7 @@ endコマンドでスパム停止
     @wrapper
     def exits(self):
         if input(console.prompt("Quit?", ask=True)).lower().startswith('y'):
+            self.raider.cleanup_voice()
             ws_pool.close_all()
             os._exit(0)
         else: self.main_menu()
@@ -2308,10 +2454,12 @@ global_raider = None
 def cleanup():
     SHOULD_STOP.set()
     ws_pool.close_all()
-    try:
-        for tok, sess in global_raider._sessions.items():
-            sess.close()
-    except: pass
+    if global_raider:
+        global_raider.cleanup_voice()
+        try:
+            for tok, sess in global_raider._sessions.items():
+                sess.close()
+        except: pass
     console.log("Cleanup", C["green"], False, "All connections closed.")
 
 # ---------- エントリーポイント ----------
