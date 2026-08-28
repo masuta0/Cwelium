@@ -1,6 +1,6 @@
 # Copyright (c) 2024-2026 Masumani Inc.
-# 完全版 – ボイス自動切断防止＋スパマー全バグ修正＋全機能維持
-# このファイル全体で既存の masumani.py を完全置換してください。
+# 完全版 – 全機能・全強化（ボイス自動切断防止・スパマー安定性・リトライ機構・プロキシローテーション・curl_cffi対応）
+# このファイル全体で masumani.py を完全置換してください。
 
 import getpass
 import sys
@@ -25,7 +25,6 @@ from datetime import datetime, timedelta
 from colorama import Fore, init; init(autoreset=True)
 from colorist import ColorHex as h
 
-# ---------- curl_cffi 優先インポート ----------
 try:
     import curl_cffi
     USE_CURL_CFFI = True
@@ -34,10 +33,8 @@ except ImportError:
     print("[!] curl_cffi not installed. Install with: pip install curl_cffi")
     print("[!] Falling back to requests (higher detection risk).")
 
-# ---------- 終了イベント（スレッドセーフ） ----------
 SHOULD_STOP = threading.Event()
 
-# ---------- 設定 ----------
 CONFIG_FILE = "config.json"
 
 def load_config():
@@ -73,10 +70,6 @@ def load_config():
                 pass
     return default
 
-def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
-        f.write(json_lib.dumps(config, indent=2))
-
 config = load_config()
 proxy = config.get("Proxies", True)
 color = config.get("Theme", "light_blue")
@@ -100,7 +93,6 @@ max_retries = config.get("MaxRetries", 5)
 retry_backoff = config.get("RetryBackoffBase", 3)
 API_BASE = f"https://discord.com/api/{api_version}"
 
-# ---------- 色定義 ----------
 C = {
     "green": h("#65fb07"), "red": h("#Fb0707"), "yellow": h("#FFCD00"),
     "magenta": h("#b207f5"), "blue": h("#00aaff"), "cyan": h("#aaffff"),
@@ -114,7 +106,6 @@ C = {
     "orchid": h("#DA70D6"), "rose": h("#FF007F")
 }
 
-# ---------- ユーティリティ ----------
 def get_random_str(length):
     return "".join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
 
@@ -162,7 +153,6 @@ class JsonWrapper:
 
 json = JsonWrapper()
 
-# ---------- コンソールレンダラー ----------
 class Render:
     def __init__(self):
         self.size = os.get_terminal_size().columns
@@ -289,7 +279,6 @@ class Render:
 
 console = Render()
 
-# ---------- ヘッダー自動取得 ----------
 class AutoFetchHeaders:
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9219 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36"
     client_build_number = 482285
@@ -318,7 +307,6 @@ class AutoFetchHeaders:
         except Exception as e:
             console.log("Failed", C["red"], False, f"Header fetch: {e}")
 
-# ---------- グローバルレートリミッター ----------
 class GlobalRateLimiter:
     def __init__(self):
         self.buckets = defaultdict(lambda: {"timestamps": deque(maxlen=100), "reset": 0, "retry_after": 0})
@@ -356,7 +344,6 @@ class GlobalRateLimiter:
 
 global_rate_limiter = GlobalRateLimiter()
 
-# ---------- WebSocketPool 完全強化 ----------
 class WebSocketPool:
     def __init__(self):
         self._connections = {}
@@ -407,7 +394,6 @@ class WebSocketPool:
 
 ws_pool = WebSocketPool()
 
-# ---------- ユーティリティ ----------
 class Utils:
     @staticmethod
     def get_ranges(index, multiplier):
@@ -422,7 +408,6 @@ class Utils:
         try: return json.loads(text)
         except: return None
 
-# ---------- DiscordSocket スクレイパー ----------
 class DiscordSocket(websocket.WebSocketApp):
     def __init__(self, token, guild_id, channel_id, timeout=30):
         self.start = time.time()
@@ -554,7 +539,6 @@ class DiscordSocket(websocket.WebSocketApp):
         else:
             console.log("Info", C["yellow"], False, f"Socket closed, scraped {len(self.members)} members")
 
-# ---------- VoiceConnection クラス（ボイス維持専用） ----------
 class VoiceConnection:
     def __init__(self, token, guild_id, channel_id):
         self.token = token
@@ -655,7 +639,6 @@ class VoiceConnection:
         except:
             pass
 
-# ---------- Raider クラス ----------
 class Raider:
     def __init__(self):
         self._load_tokens_proxies()
@@ -668,7 +651,7 @@ class Raider:
         self._proxy_index = 0
         self.status_thread_running = False
         self._impersonate_list = ["chrome110", "chrome120", "chrome124", "chrome136", "edge101", "firefox101", "firefox100"]
-        self._voice_connections = {}  # ボイス接続管理
+        self._voice_connections = {}
         if USE_CURL_CFFI:
             console.log("Info", C["cyan"], False, "curl_cffi enabled (TLS fingerprint spoofing)")
         else:
@@ -1887,12 +1870,10 @@ class Raider:
         input(f"\n   {console.background}~/> press enter to continue ")
         Menu().main_menu()
 
-    # ---------- クリーンアップ用 ----------
     def cleanup_voice(self):
         for token in list(self._voice_connections.keys()):
             self.leave_voice_channel(token)
 
-# ---------- Menu クラス ----------
 class Menu:
     def __init__(self):
         global global_raider
@@ -1971,7 +1952,6 @@ class Menu:
         input(f"\n   {self.background}~/> press enter to continue ")
         self.main_menu()
 
-    # ---------- 各メニュー項目 ----------
     @wrapper
     def joiner(self):
         invite = input(console.prompt("Invite")).strip()
@@ -2432,7 +2412,7 @@ class Menu:
         console.clear(); console.render_ascii()
         help_text = f"""
 {C['cyan']}【 Masumani Ultimate ヘルプ 】{C['white']}
-全34機能 + ボイス自動維持 + スパマー安定化
+全34機能 + ボイス自動維持 + スパマー安定化 + リトライ機構
 endコマンドでスパム停止
 設定: config.json で遅延・リトライ・プロキシローテーション調整
 """
@@ -2450,7 +2430,6 @@ endコマンドでスパム停止
 
 global_raider = None
 
-# ---------- クリーンアップ ----------
 def cleanup():
     SHOULD_STOP.set()
     ws_pool.close_all()
@@ -2462,7 +2441,6 @@ def cleanup():
         except: pass
     console.log("Cleanup", C["green"], False, "All connections closed.")
 
-# ---------- エントリーポイント ----------
 if __name__ == "__main__":
     try:
         Menu().main_menu()
