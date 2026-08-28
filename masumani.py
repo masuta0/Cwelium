@@ -1,5 +1,5 @@
 # Copyright (c) 2024-2026 Masumani Inc.
-# 完全版 – 全機能・全強化（ボイス自動切断防止・スパマー安定性・リトライ機構・プロキシローテーション・curl_cffi対応）
+# 完全版 – 全機能・全強化（Voice接続オプション・速度最適化・無効トークン自動削除・無限リトライ抑制）
 # このファイル全体で masumani.py を完全置換してください。
 
 import getpass
@@ -59,7 +59,11 @@ def load_config():
         "MaxWorkers": 8,
         "MaxRetries": 5,
         "RetryBackoffBase": 3,
-        "ProxyRotation": "random"
+        "ProxyRotation": "random",
+        "VoiceMute": False,
+        "VoiceDeaf": False,
+        "VoiceVideo": True,
+        "VoiceStream": False
     }
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
@@ -91,6 +95,10 @@ cache_ttl = config.get("CacheTTL", 600)
 max_workers = config.get("MaxWorkers", 8)
 max_retries = config.get("MaxRetries", 5)
 retry_backoff = config.get("RetryBackoffBase", 3)
+voice_mute = config.get("VoiceMute", False)
+voice_deaf = config.get("VoiceDeaf", False)
+voice_video = config.get("VoiceVideo", True)
+voice_stream = config.get("VoiceStream", False)
 API_BASE = f"https://discord.com/api/{api_version}"
 
 C = {
@@ -540,10 +548,14 @@ class DiscordSocket(websocket.WebSocketApp):
             console.log("Info", C["yellow"], False, f"Socket closed, scraped {len(self.members)} members")
 
 class VoiceConnection:
-    def __init__(self, token, guild_id, channel_id):
+    def __init__(self, token, guild_id, channel_id, mute=False, deaf=False, video=True, stream=False):
         self.token = token
         self.guild_id = guild_id
         self.channel_id = channel_id
+        self.mute = mute
+        self.deaf = deaf
+        self.video = video
+        self.stream = stream
         self.ws = None
         self.running = False
         self.thread = None
@@ -551,6 +563,8 @@ class VoiceConnection:
         self.last_heartbeat = 0
         self.voice_server_id = None
         self.session_id = None
+        self._reconnect_count = 0
+        self._last_error_time = 0
 
     def start(self):
         if self.running:
@@ -572,12 +586,20 @@ class VoiceConnection:
             try:
                 self._connect_and_loop()
             except Exception as e:
-                console.log("Voice Error", C["red"], f"{self.token[:15]}...", str(e))
-                time.sleep(5)
+                now = time.time()
+                if now - self._last_error_time > 5:  # 5秒間隔でログ出力抑制
+                    console.log("Voice Error", C["red"], f"{self.token[:15]}...", str(e))
+                    self._last_error_time = now
+                # 指数バックオフ（最大60秒）
+                self._reconnect_count += 1
+                wait = min(60, 2 ** min(self._reconnect_count, 6))
+                time.sleep(wait)
 
     def _connect_and_loop(self):
+        self._reconnect_count = 0
         self.ws = websocket.WebSocket()
-        self.ws.connect("wss://gateway.discord.gg/?v=10&encoding=json")
+        self.ws.connect("wss://gateway.discord.gg/?v=10&encoding=json", timeout=15)
+        # 認証
         self.ws.send(json.dumps({
             "op": 2,
             "d": {
@@ -586,15 +608,16 @@ class VoiceConnection:
                 "presence": {"status": "online", "since": 0, "activities": [], "afk": False}
             }
         }))
+        # ボイス状態更新（設定に従う）
         self.ws.send(json.dumps({
             "op": 4,
             "d": {
                 "guild_id": self.guild_id,
                 "channel_id": self.channel_id,
-                "self_mute": False,
-                "self_deaf": False,
-                "self_stream": False,
-                "self_video": True
+                "self_mute": self.mute,
+                "self_deaf": self.deaf,
+                "self_stream": self.stream,
+                "self_video": self.video
             }
         }))
         self.last_heartbeat = time.time()
@@ -616,19 +639,21 @@ class VoiceConnection:
                             self.session_id = data["d"].get("session_id")
                 except websocket.WebSocketTimeoutException:
                     pass
+                # ハートビート
                 if time.time() - self.last_heartbeat > self.heartbeat_interval:
                     self.ws.send(json.dumps({"op": 1, "d": None}))
                     self.last_heartbeat = time.time()
+                # 定期的にボイス状態を再送信（切断防止）
                 if time.time() - self.last_heartbeat > 15:
                     self.ws.send(json.dumps({
                         "op": 4,
                         "d": {
                             "guild_id": self.guild_id,
                             "channel_id": self.channel_id,
-                            "self_mute": False,
-                            "self_deaf": False,
-                            "self_stream": False,
-                            "self_video": True
+                            "self_mute": self.mute,
+                            "self_deaf": self.deaf,
+                            "self_stream": self.stream,
+                            "self_video": self.video
                         }
                     }))
             except Exception as e:
@@ -1213,15 +1238,21 @@ class Raider:
             except Exception as e:
                 console.log("Fatal", C["red"], f"{token[:15]}...", str(e)); time.sleep(10)
 
-    # ---------- Voice 関連（完全ボイス維持） ----------
-    def join_voice_channel(self, token, guild_id, channel_id):
+    # ---------- Voice 関連（完全ボイス維持・オプション対応） ----------
+    def join_voice_channel(self, token, guild_id, channel_id, mute=None, deaf=None, video=None, stream=None):
+        # 設定値の上書き（引数が指定されていればそれを使用）
+        if mute is None: mute = voice_mute
+        if deaf is None: deaf = voice_deaf
+        if video is None: video = voice_video
+        if stream is None: stream = voice_stream
+
         if token in self._voice_connections:
             self._voice_connections[token].stop()
             del self._voice_connections[token]
-        vc = VoiceConnection(token, guild_id, channel_id)
+        vc = VoiceConnection(token, guild_id, channel_id, mute, deaf, video, stream)
         vc.start()
         self._voice_connections[token] = vc
-        console.log("Voice Joined", C["green"], f"{token[:15]}...", f"channel {channel_id}")
+        console.log("Voice Joined", C["green"], f"{token[:15]}...", f"ch {channel_id} (mute={mute}, deaf={deaf}, video={video}, stream={stream})")
 
     def leave_voice_channel(self, token):
         if token in self._voice_connections:
@@ -1237,10 +1268,10 @@ class Raider:
                 "d": {
                     "guild_id": guild_id,
                     "channel_id": channel_id,
-                    "self_mute": False,
-                    "self_deaf": False,
-                    "self_stream": False,
-                    "self_video": True,
+                    "self_mute": voice_mute,
+                    "self_deaf": voice_deaf,
+                    "self_stream": voice_stream,
+                    "self_video": voice_video,
                 },
             }))
             ws.send(json.dumps({
@@ -1274,8 +1305,10 @@ class Raider:
                     "d": {
                         "guild_id": guild,
                         "channel_id": channel,
-                        "self_mute": random.choice([True, False]),
-                        "self_deaf": False
+                        "self_mute": voice_mute,
+                        "self_deaf": voice_deaf,
+                        "self_stream": voice_stream,
+                        "self_video": voice_video
                     }
                 }))
         except Exception as e:
@@ -1481,34 +1514,50 @@ class Raider:
         args = [(token,) for token in self.tokens]
         Menu().run(main_checker, args)
 
+    # ---------- Token Checker 高速版（無効トークンを自動削除） ----------
     def token_checker(self):
         valid = []
-        def main(token):
+        invalid = []
+        def check(token):
             try:
-                while True:
-                    resp = self._request("GET", f"{API_BASE}/users/@me/library", token, headers=self.headers_full(token), timeout=10)
-                    if resp.status_code == 200:
-                        console.log("Valid", C["green"], f"{token[:25]}...")
-                        valid.append(token)
-                        break
-                    elif resp.status_code == 403:
-                        console.log("Locked", C["yellow"], f"{token[:25]}...")
-                        break
-                    elif resp.status_code == 429:
-                        retry_after = resp.json()["retry_after"]
-                        console.log("Ratelimit", C["pink"], f"{token[:25]}...", f"{retry_after}s")
-                        time.sleep(retry_after)
-                    else:
-                        console.log("Invalid", C["red"], f"{token[:25]}...", resp.json().get("message"))
-                        break
+                resp = self._request("GET", f"{API_BASE}/users/@me/library", token, headers=self.headers_full(token), timeout=10)
+                if resp.status_code == 200:
+                    console.log("Valid", C["green"], f"{token[:25]}...")
+                    return token, True
+                elif resp.status_code == 403:
+                    console.log("Locked", C["yellow"], f"{token[:25]}...")
+                    return token, True  # locked は有効扱い（削除しない）
+                elif resp.status_code == 429:
+                    retry_after = resp.json().get("retry_after", 5)
+                    console.log("RateLimit", C["pink"], f"{token[:25]}...", f"{retry_after}s")
+                    time.sleep(retry_after)
+                    return check(token)  # 再帰
+                else:
+                    console.log("Invalid", C["red"], f"{token[:25]}...", resp.json().get("message"))
+                    return token, False
             except Exception as e:
-                console.log("Failed", C["red"], f"{token[:25]}...", e)
-        with open("data/tokens.txt", "r") as f:
-            tokens = list({line.strip().replace('"', '') for line in f if line.strip()})
-        args = [(token,) for token in tokens]
-        Menu().run(main, args)
+                console.log("Error", C["red"], f"{token[:25]}...", str(e))
+                return token, False
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(self.tokens))) as ex:
+            results = list(ex.map(check, self.tokens))
+
+        valid_tokens = []
+        for token, is_valid in results:
+            if is_valid:
+                valid_tokens.append(token)
+            else:
+                invalid.append(token)
+
+        if invalid:
+            console.log("Deleting invalid tokens", C["red"], False, f"{len(invalid)} tokens removed")
         with open("data/tokens.txt", "w") as f:
-            f.write("\n".join(valid))
+            for token in valid_tokens:
+                f.write(f"{token}\n")
+        self.tokens = valid_tokens
+        console.log("Token Check Done", C["green"], False, f"Valid: {len(valid_tokens)}, Invalid: {len(invalid)}")
+        input("Press Enter to continue...")
+        Menu().main_menu()
 
     def accept_rules(self, guild_id):
         try:
@@ -2327,8 +2376,17 @@ class Menu:
         link = input(console.prompt("Channel LINK")).strip()
         if not link.startswith("https://"): self.main_menu()
         guild = link.split("/")[4]; channel = link.split("/")[5]
-        args = [(tok, guild, channel) for tok in self.raider.tokens]
-        self.run(self.raider.join_voice_channel, args)
+        # オプション選択
+        mute = input(console.prompt("Mute? (y/n, デフォルト: config)")).strip().lower()
+        deaf = input(console.prompt("Deaf? (y/n, デフォルト: config)")).strip().lower()
+        video = input(console.prompt("Video? (y/n, デフォルト: config)")).strip().lower()
+        stream = input(console.prompt("Stream? (y/n, デフォルト: config)")).strip().lower()
+        def parse_bool(val):
+            if val == 'y': return True
+            if val == 'n': return False
+            return None  # config値を使用
+        args = [(tok, guild, channel, parse_bool(mute), parse_bool(deaf), parse_bool(video), parse_bool(stream)) for tok in self.raider.tokens]
+        self.run(lambda t,g,c,m,d,v,s: self.raider.join_voice_channel(t,g,c,m,d,v,s), args)
 
     @wrapper
     def Thread_Spammer(self):
@@ -2412,9 +2470,10 @@ class Menu:
         console.clear(); console.render_ascii()
         help_text = f"""
 {C['cyan']}【 Masumani Ultimate ヘルプ 】{C['white']}
-全34機能 + ボイス自動維持 + スパマー安定化 + リトライ機構
+全34機能 + ボイス自動維持 + スパマー安定化 + リトライ機構 + 無効トークン自動削除
 endコマンドでスパム停止
-設定: config.json で遅延・リトライ・プロキシローテーション調整
+Voiceオプションは config.json の VoiceMute, VoiceDeaf, VoiceVideo, VoiceStream で設定可能
+または機能21実行時に個別指定可能
 """
         print(help_text)
         input(f"\n   {self.background}~/> press enter to continue ")
